@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { API, type SessionDetail as TSessionDetail } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 
 function fmtDate(s: string) {
   return new Date(s).toLocaleString(undefined, {
@@ -14,6 +15,7 @@ function fmtDate(s: string) {
 export function SessionDetail({ sessionId }: { sessionId: number }) {
   const [detail, setDetail] = useState<TSessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [plotOpen, setPlotOpen] = useState(false);
 
   useEffect(() => {
     API.session(sessionId)
@@ -76,15 +78,41 @@ export function SessionDetail({ sessionId }: { sessionId: number }) {
       </div>
 
       <div>
-        <p className="text-xs text-slate-500 uppercase tracking-wide mb-2">Analysis Plot</p>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs text-slate-500 uppercase tracking-wide">Analysis Plot</p>
+          <button
+            onClick={() => setPlotOpen(true)}
+            className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            expand ↗
+          </button>
+        </div>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={API.plotUrl(sessionId)}
           alt={`Session ${sessionId} plot`}
-          className="w-full rounded-lg border border-slate-700"
+          className="w-full rounded-lg border border-slate-700 cursor-pointer"
+          onClick={() => setPlotOpen(true)}
           onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
         />
       </div>
+
+      <Modal
+        open={plotOpen}
+        onClose={() => setPlotOpen(false)}
+        title={`Session ${sessionId} — Analysis Plot`}
+        className="max-w-3xl"
+      >
+        <div className="overflow-auto px-2 pb-4" style={{ maxHeight: "80vh" }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={API.plotUrl(sessionId)}
+            alt={`Session ${sessionId} plot`}
+            className="w-full rounded-lg"
+            style={{ minWidth: "600px" }}
+          />
+        </div>
+      </Modal>
 
       {anomalies.length > 0 && (
         <div>
