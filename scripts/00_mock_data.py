@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Mock OBD data generator for testing 04_analyse.py without Pi/car hardware.
+Mock OBD data generator for testing 04_analyse.py and the FastAPI backend
+without Pi/car hardware.
 
 Creates two sessions in the SQLite database:
   Session 1 — Healthy N14 baseline (warm idle, normal values)
   Session 2 — P0100/2B5F fault pattern (low MAF, climbing LTFT)
+
+Schema matches obd_manager.py exactly so both the API and the analyser
+work against the same DB.
 
 Usage:
     python ~/mini_obd/scripts/00_mock_data.py
@@ -20,272 +24,175 @@ from pathlib import Path
 
 random.seed(42)
 
-HOME    = str(Path.home())
-DB_PATH = f"{HOME}/mini_obd/data/mini_obd.db"
-Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-Path(f"{HOME}/mini_obd/logs").mkdir(parents=True, exist_ok=True)
+DB_PATH = Path.home() / "mini_obd" / "data" / "mini_obd.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+(Path.home() / "mini_obd" / "logs").mkdir(parents=True, exist_ok=True)
 
-# ── Schema ────────────────────────────────────────────────────
-conn   = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-
-cursor.executescript("""
+# ── Schema — must match obd_manager.py _init_db() exactly ────────────────────
+conn = sqlite3.connect(DB_PATH)
+conn.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        start_time TEXT NOT NULL,
-        end_time   TEXT,
-        port       TEXT,
-        samples    INTEGER DEFAULT 0,
-        note       TEXT
-    );
-
+        session_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at   TEXT NOT NULL,
+        port         TEXT,
+        protocol     TEXT,
+        notes        TEXT
+    )
+""")
+conn.execute("""
     CREATE TABLE IF NOT EXISTS readings (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id      INTEGER,
-        timestamp       TEXT NOT NULL,
-        elapsed_s       REAL,
-        maf_gs          REAL,
-        stft_pct        REAL,
-        ltft_pct        REAL,
-        engine_load     REAL,
-        rpm             REAL,
-        coolant_c       REAL,
-        iat_c           REAL,
-        throttle_pct    REAL,
-        map_kpa         REAL,
-        speed_kph       REAL,
-        timing_deg      REAL,
-        o2_b1s1_v       REAL,
-        o2_b1s2_v       REAL,
-        fuel_pressure   REAL,
-        barometric_kpa  REAL,
-        run_time_s      REAL,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id   INTEGER NOT NULL REFERENCES sessions(session_id),
+        ts           TEXT NOT NULL,
+        elapsed_s    REAL,
+        rpm          REAL, coolant_c REAL, maf_gs REAL,
+        throttle_pct REAL, map_kpa REAL, iat_c REAL,
+        speed_kph    REAL, stft_pct REAL, ltft_pct REAL,
+        timing_deg   REAL, o2_b1s1_v REAL, o2_b1s2_v REAL,
         anomaly_flag    INTEGER DEFAULT 0,
-        anomaly_reason  TEXT,
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-    );
-
+        anomaly_reason  TEXT DEFAULT ''
+    )
+""")
+conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_session_time
-    ON readings(session_id, elapsed_s);
+    ON readings(session_id, elapsed_s)
 """)
 conn.commit()
 
+# ── Thresholds (mirror obd_manager.py) ───────────────────────────────────────
 THRESHOLDS = {
-    "maf_gs"   : {"idle_min": 1.5,  "idle_max": 6.0},
-    "stft_pct" : {"min": -10.0, "max": 10.0},
-    "ltft_pct" : {"min": -10.0, "max": 10.0},
-    "coolant_c": {"min": 60.0,  "max": 110.0},
+    "maf_gs":      {"min": 0.5,  "max": 25.0},
+    "ltft_pct":    {"min": -15,  "max": 15},
+    "combined_ft": {"min": -20,  "max": 20},
+    "coolant_c":   {"min": 70,   "max": 115},
 }
 
 def noise(scale=1.0):
     return random.gauss(0, scale)
 
-def check_anomalies(row):
-    flags, reasons = [], []
-    rpm = row.get("rpm")
-    maf = row.get("maf_gs")
-    if rpm and maf and rpm < 1100:
-        t = THRESHOLDS["maf_gs"]
-        if maf < t["idle_min"] or maf > t["idle_max"]:
-            flags.append(True)
-            reasons.append(
-                f"MAF={maf:.2f}g/s outside idle [{t['idle_min']}-{t['idle_max']}]"
-            )
-    for key in ("stft_pct", "ltft_pct"):
-        val = row.get(key)
-        if val is not None:
-            t = THRESHOLDS[key]
-            if val < t["min"] or val > t["max"]:
-                flags.append(True)
-                reasons.append(
-                    f"{key}={val:+.1f}% outside [{t['min']},{t['max']}]%"
-                )
-    ct = row.get("coolant_c")
-    if ct and ct > THRESHOLDS["coolant_c"]["max"]:
-        flags.append(True)
-        reasons.append(f"Coolant={ct:.0f}°C OVERHEATING!")
-    return bool(flags), ", ".join(reasons)
+def check_anomaly(row):
+    reasons = []
+    maf  = row.get("maf_gs")
+    stft = row.get("stft_pct")
+    ltft = row.get("ltft_pct")
+    if maf is not None and (maf < THRESHOLDS["maf_gs"]["min"] or maf > THRESHOLDS["maf_gs"]["max"]):
+        reasons.append(f"MAF={maf:.2f} g/s out of range")
+    if ltft is not None:
+        if ltft < THRESHOLDS["ltft_pct"]["min"] or ltft > THRESHOLDS["ltft_pct"]["max"]:
+            reasons.append(f"LTFT={ltft:.1f}% out of range")
+        if stft is not None:
+            combined = stft + ltft
+            if combined < THRESHOLDS["combined_ft"]["min"] or combined > THRESHOLDS["combined_ft"]["max"]:
+                reasons.append(f"STFT+LTFT={combined:.1f}% critical")
+    cool = row.get("coolant_c")
+    if cool is not None and (cool < THRESHOLDS["coolant_c"]["min"] or cool > THRESHOLDS["coolant_c"]["max"]):
+        reasons.append(f"coolant={cool:.0f}°C out of range")
+    return (1 if reasons else 0), "; ".join(reasons)
 
-def insert_session(note):
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cursor.execute(
-        "INSERT INTO sessions (start_time, port, note) VALUES (?,?,?)",
-        (ts, "/dev/kdcan", note)
+def insert_session(notes, protocol="ISO 15765-4 (CAN 11/500)"):
+    cur = conn.execute(
+        "INSERT INTO sessions (started_at, port, protocol, notes) VALUES (?,?,?,?)",
+        (datetime.now().isoformat(), "/dev/kdcan", protocol, notes),
     )
     conn.commit()
-    return cursor.lastrowid, ts
+    return cur.lastrowid
 
 def insert_readings(session_id, rows):
     for row in rows:
-        flag, reason = check_anomalies(row)
-        row["anomaly_flag"]   = 1 if flag else 0
-        row["anomaly_reason"] = reason if flag else ""
-        cursor.execute("""
+        flag, reason = check_anomaly(row)
+        conn.execute("""
             INSERT INTO readings (
-                session_id, timestamp, elapsed_s,
-                maf_gs, stft_pct, ltft_pct, engine_load,
-                rpm, coolant_c, iat_c, throttle_pct,
-                map_kpa, speed_kph, timing_deg,
-                o2_b1s1_v, o2_b1s2_v, fuel_pressure,
-                barometric_kpa, run_time_s,
-                anomaly_flag, anomaly_reason
-            ) VALUES (
-                :session_id, :timestamp, :elapsed_s,
-                :maf_gs, :stft_pct, :ltft_pct, :engine_load,
-                :rpm, :coolant_c, :iat_c, :throttle_pct,
-                :map_kpa, :speed_kph, :timing_deg,
-                :o2_b1s1_v, :o2_b1s2_v, :fuel_pressure,
-                :barometric_kpa, :run_time_s,
-                :anomaly_flag, :anomaly_reason
-            )
-        """, {**row, "session_id": session_id})
-
-    cursor.execute(
-        "UPDATE sessions SET end_time=?, samples=? WHERE id=?",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), len(rows), session_id)
-    )
+                session_id, ts, elapsed_s,
+                rpm, coolant_c, maf_gs, throttle_pct, map_kpa, iat_c,
+                speed_kph, stft_pct, ltft_pct, timing_deg,
+                o2_b1s1_v, o2_b1s2_v, anomaly_flag, anomaly_reason
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            session_id, row["ts"], row["elapsed_s"],
+            row["rpm"], row["coolant_c"], row["maf_gs"],
+            row["throttle_pct"], row["map_kpa"], row["iat_c"],
+            row["speed_kph"], row["stft_pct"], row["ltft_pct"],
+            row["timing_deg"], row["o2_b1s1_v"], row["o2_b1s2_v"],
+            flag, reason,
+        ))
     conn.commit()
 
-# ── Session 1: Healthy N14 baseline ──────────────────────────
-# Warm idle, MAF 2.5-3.5 g/s, LTFT ±3%, a few throttle blips
+# ── Session 1: Healthy N14 baseline ──────────────────────────────────────────
 print("Generating Session 1: Healthy N14 baseline...")
 
-sid1, ts1 = insert_session("MOCK — Healthy N14 baseline")
+sid1 = insert_session("MOCK — Healthy N14 baseline")
 rows1 = []
-duration = 300  # 5 minutes
-interval = 0.5
-t = 0.0
 base_time = datetime.now()
-
-while t <= duration:
+t = 0.0
+while t <= 300:
     elapsed = round(t, 2)
-    ts      = (base_time + timedelta(seconds=t)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-    # Coolant warms from 85 to 92 over session (already mostly warm)
+    ts = (base_time + timedelta(seconds=t)).isoformat()
     coolant = 85.0 + (92.0 - 85.0) * (1 - math.exp(-t / 120)) + noise(0.3)
-
-    # RPM: warm idle with occasional blip
     if 60 < t < 70 or 160 < t < 170 or 240 < t < 250:
-        rpm = 2500 + noise(80)
-        throttle = 18 + noise(1)
-        maf      = 14 + noise(0.8)
-        map_kpa  = 75 + noise(3)
-        engine_load = 45 + noise(3)
-        timing   = 18 + noise(1)
+        rpm = 2500 + noise(80);  throttle = 18 + noise(1)
+        maf = 14 + noise(0.8);   map_kpa  = 75 + noise(3)
+        timing = 18 + noise(1)
     else:
-        rpm = 820 + noise(15)
-        throttle = 3.5 + noise(0.3)
-        maf      = 2.8 + noise(0.15)
-        map_kpa  = 38 + noise(2)
-        engine_load = 22 + noise(2)
-        timing   = 8 + noise(0.5)
-
+        rpm = 820 + noise(15);   throttle = 3.5 + noise(0.3)
+        maf = 2.8 + noise(0.15); map_kpa  = 38 + noise(2)
+        timing = 8 + noise(0.5)
     stft = noise(1.5)
-    ltft = 1.5 + noise(0.8)     # Healthy: slightly positive, well within ±10%
-    o2_b1s1 = 0.45 + 0.35 * math.sin(t * 1.1) + noise(0.03)
-    o2_b1s2 = 0.65 + noise(0.02)
-
+    ltft = 1.5 + noise(0.8)
+    o2_b1s1 = max(0.05, min(0.95, 0.45 + 0.35 * math.sin(t * 1.1) + noise(0.03)))
     rows1.append({
-        "timestamp"     : ts,
-        "elapsed_s"     : elapsed,
-        "maf_gs"        : round(maf, 4),
-        "stft_pct"      : round(stft, 4),
-        "ltft_pct"      : round(ltft, 4),
-        "engine_load"   : round(engine_load, 4),
-        "rpm"           : round(rpm, 1),
-        "coolant_c"     : round(coolant, 2),
-        "iat_c"         : round(28 + noise(1), 2),
-        "throttle_pct"  : round(throttle, 2),
-        "map_kpa"       : round(map_kpa, 2),
-        "speed_kph"     : 0.0,
-        "timing_deg"    : round(timing, 2),
-        "o2_b1s1_v"     : round(max(0.05, min(0.95, o2_b1s1)), 4),
-        "o2_b1s2_v"     : round(o2_b1s2, 4),
-        "fuel_pressure" : round(350 + noise(5), 2),
-        "barometric_kpa": round(101.3 + noise(0.1), 2),
-        "run_time_s"    : round(t, 1),
+        "ts": ts, "elapsed_s": elapsed,
+        "maf_gs": round(maf, 4),       "stft_pct": round(stft, 4),
+        "ltft_pct": round(ltft, 4),    "rpm": round(rpm, 1),
+        "coolant_c": round(coolant, 2),"iat_c": round(28 + noise(1), 2),
+        "throttle_pct": round(throttle, 2), "map_kpa": round(map_kpa, 2),
+        "speed_kph": 0.0,              "timing_deg": round(timing, 2),
+        "o2_b1s1_v": round(o2_b1s1, 4), "o2_b1s2_v": round(0.65 + noise(0.02), 4),
     })
-    t += interval
+    t += 0.5
 
 insert_readings(sid1, rows1)
-print(f"  Session 1: {len(rows1)} samples, session_id={sid1}")
+anomalies1 = sum(1 for r in rows1 if check_anomaly(r)[0])
+print(f"  Session 1: {len(rows1)} samples, session_id={sid1}, anomalies={anomalies1}")
 
-# ── Session 2: P0100/2B5F fault pattern ──────────────────────
-# MAF reads ~35% of expected. LTFT climbs from +8% to +25%.
-# RPM and MAP are plausible — DME knows something is wrong.
+# ── Session 2: P0100/2B5F fault pattern ──────────────────────────────────────
 print("Generating Session 2: P0100/2B5F fault pattern (low MAF, climbing LTFT)...")
 
-sid2, ts2 = insert_session("MOCK — P0100/2B5F fault: low MAF, high LTFT")
+sid2 = insert_session("MOCK — P0100/2B5F fault: low MAF, climbing LTFT")
 rows2 = []
-duration = 420  # 7 minutes
-t = 0.0
 base_time = datetime.now()
-
-while t <= duration:
+t = 0.0
+while t <= 420:
     elapsed = round(t, 2)
-    ts      = (base_time + timedelta(seconds=t)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
+    ts = (base_time + timedelta(seconds=t)).isoformat()
     coolant = 90.0 + noise(0.4)
-
-    # MAF fault: reads ~0.7-1.1 g/s at idle (should be 2.5-3.5)
-    # Simulates cam timing off by ~1 tooth or MAF signal dragged low
     if 120 < t < 135 or 280 < t < 295:
-        # Throttle blips — MAF responds but still reads low
-        rpm      = 2300 + noise(100)
-        throttle = 16 + noise(1.5)
-        maf      = 8 + noise(0.6)      # ~55% of expected at this RPM
-        map_kpa  = 70 + noise(4)
-        engine_load = 52 + noise(4)
-        timing   = 16 + noise(1.5)
+        rpm = 2300 + noise(100); throttle = 16 + noise(1.5)
+        maf = 8 + noise(0.6);   map_kpa  = 70 + noise(4)
+        timing = 16 + noise(1.5)
     else:
-        rpm      = 850 + noise(20)
-        throttle = 3.8 + noise(0.3)
-        maf      = 0.85 + noise(0.08)  # Way too low for idle
-        map_kpa  = 40 + noise(2)
-        engine_load = 28 + noise(3)    # Load higher than MAF suggests (DME confused)
-        timing   = 6 + noise(1)
-
-    # LTFT climbs progressively as DME tries to correct lean condition
-    # Reaches ~+22% by end of session then plateaus (hits limit, sets 2B5F)
-    ltft_target = min(22.0, 8.0 + (t / duration) * 18.0)
-    ltft = ltft_target + noise(0.5)
-
-    # STFT oscillates high as DME desperately adds short-term fuel
-    stft = 8.5 + 3.5 * math.sin(t * 0.3) + noise(1.2)
-    stft = max(-15, min(15, stft))
-
-    # O2 reads lean (DME still correcting, sensor sees lean exhaust)
-    o2_b1s1 = 0.15 + 0.12 * math.sin(t * 0.8) + noise(0.04)  # Leaning out
-    o2_b1s1 = max(0.05, min(0.95, o2_b1s1))
-    o2_b1s2 = 0.55 + noise(0.03)
-
+        rpm = 850 + noise(20);   throttle = 3.8 + noise(0.3)
+        maf = 0.85 + noise(0.08); map_kpa = 40 + noise(2)
+        timing = 6 + noise(1)
+    ltft = min(22.0, 8.0 + (t / 420) * 18.0) + noise(0.5)
+    stft = max(-15, min(15, 8.5 + 3.5 * math.sin(t * 0.3) + noise(1.2)))
+    o2_b1s1 = max(0.05, min(0.95, 0.15 + 0.12 * math.sin(t * 0.8) + noise(0.04)))
     rows2.append({
-        "timestamp"     : ts,
-        "elapsed_s"     : elapsed,
-        "maf_gs"        : round(maf, 4),
-        "stft_pct"      : round(stft, 4),
-        "ltft_pct"      : round(ltft, 4),
-        "engine_load"   : round(engine_load, 4),
-        "rpm"           : round(rpm, 1),
-        "coolant_c"     : round(coolant, 2),
-        "iat_c"         : round(30 + noise(1.2), 2),
-        "throttle_pct"  : round(throttle, 2),
-        "map_kpa"       : round(map_kpa, 2),
-        "speed_kph"     : 0.0,
-        "timing_deg"    : round(timing, 2),
-        "o2_b1s1_v"     : round(o2_b1s1, 4),
-        "o2_b1s2_v"     : round(o2_b1s2, 4),
-        "fuel_pressure" : round(348 + noise(6), 2),
-        "barometric_kpa": round(101.3 + noise(0.1), 2),
-        "run_time_s"    : round(t, 1),
+        "ts": ts, "elapsed_s": elapsed,
+        "maf_gs": round(maf, 4),       "stft_pct": round(stft, 4),
+        "ltft_pct": round(ltft, 4),    "rpm": round(rpm, 1),
+        "coolant_c": round(coolant, 2),"iat_c": round(30 + noise(1.2), 2),
+        "throttle_pct": round(throttle, 2), "map_kpa": round(map_kpa, 2),
+        "speed_kph": 0.0,              "timing_deg": round(timing, 2),
+        "o2_b1s1_v": round(o2_b1s1, 4), "o2_b1s2_v": round(0.55 + noise(0.03), 4),
     })
-    t += interval
+    t += 0.5
 
 insert_readings(sid2, rows2)
-print(f"  Session 2: {len(rows2)} samples, session_id={sid2}")
+anomalies2 = sum(1 for r in rows2 if check_anomaly(r)[0])
+print(f"  Session 2: {len(rows2)} samples, session_id={sid2}, anomalies={anomalies2}")
 
 conn.close()
 print(f"\nDatabase: {DB_PATH}")
 print("Run analyser:")
-print(f"  python ~/mini_obd/scripts/04_analyse.py --session 1")
-print(f"  python ~/mini_obd/scripts/04_analyse.py --session 2")
+print(f"  python ~/mini_obd/scripts/04_analyse.py --session {sid1}")
+print(f"  python ~/mini_obd/scripts/04_analyse.py --session {sid2}")

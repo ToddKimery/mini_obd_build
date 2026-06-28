@@ -63,11 +63,24 @@ RUN mkdir -p /root/mini_obd/logs \
              /root/mini_obd/config \
              /root/mini_obd/scripts
 
-# ── Copy scripts ──────────────────────────────────────────────
+# ── API packages ─────────────────────────────────────────────
+RUN /root/obd_env/bin/pip install --prefer-binary \
+        fastapi \
+        "uvicorn[standard]" \
+        websockets \
+        python-multipart \
+        aiofiles
+
+# ── Copy scripts + app ────────────────────────────────────────
 COPY scripts/ /root/mini_obd/scripts/
+COPY app/api/  /root/mini_obd/app/api/
+COPY app/web/out/ /root/mini_obd/app/web/out/
 
 # ── Activate venv by default ──────────────────────────────────
 ENV PATH="/root/obd_env/bin:$PATH"
 ENV VIRTUAL_ENV="/root/obd_env"
 
-WORKDIR /root/mini_obd
+WORKDIR /root/mini_obd/app/api
+
+EXPOSE 8080
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

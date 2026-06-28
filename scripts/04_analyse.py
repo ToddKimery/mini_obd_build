@@ -59,15 +59,13 @@ def warn(m): print(f"  {YELLOW}!{RESET} {m}")
 def list_sessions(conn):
     df = pd.read_sql("""
         SELECT
-            id,
-            start_time,
-            end_time,
-            samples,
+            session_id,
+            started_at,
             port,
-            ROUND((JULIANDAY(COALESCE(end_time, 'now'))
-                   - JULIANDAY(start_time)) * 86400) AS duration_s
+            protocol,
+            ROUND((JULIANDAY('now') - JULIANDAY(started_at)) * 86400) AS duration_s
         FROM sessions
-        ORDER BY id DESC
+        ORDER BY session_id DESC
     """, conn)
     if df.empty:
         print("No sessions logged yet.")
@@ -78,7 +76,7 @@ def list_sessions(conn):
 def load_session(conn, session_id=None, idle_only=False):
     if session_id is None:
         cur = conn.cursor()
-        cur.execute("SELECT MAX(id) FROM sessions")
+        cur.execute("SELECT MAX(session_id) FROM sessions")
         row = cur.fetchone()
         if not row or row[0] is None:
             print("No sessions in database — run the logger first.")
