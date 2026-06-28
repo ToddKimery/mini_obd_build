@@ -72,6 +72,11 @@ RUN /root/obd_env/bin/pip install --prefer-binary \
         aiofiles \
         anthropic
 
+# ── Bake version at build time ────────────────────────────────
+ARG BUILD_VERSION=dev
+ARG BUILD_DATE=
+RUN printf '%s\n%s\n' "${BUILD_VERSION}" "${BUILD_DATE}" > /root/mini_obd/VERSION
+
 # ── Copy scripts + app ────────────────────────────────────────
 COPY scripts/ /root/mini_obd/scripts/
 COPY app/api/  /root/mini_obd/app/api/

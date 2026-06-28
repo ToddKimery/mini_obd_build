@@ -253,7 +253,8 @@ async def generate_ai_report(session_id: int, force: bool = False) -> dict:
 
 @app.get("/api/version")
 async def get_version() -> dict:
-    repo = Path(__file__).parent.parent.parent  # mini_obd_build root
+    repo = Path(__file__).parent.parent.parent  # mini_obd_build root or /root/mini_obd
+    # Try live git first (Pi deployment)
     try:
         version = subprocess.run(
             ["git", "describe", "--tags", "--always"],
@@ -267,6 +268,11 @@ async def get_version() -> dict:
             return {"version": version, "date": date}
     except Exception:
         pass
+    # Fall back to baked-in VERSION file (Docker image)
+    version_file = Path.home() / "mini_obd" / "VERSION"
+    if version_file.exists():
+        lines = version_file.read_text().splitlines()
+        return {"version": lines[0] if lines else "dev", "date": lines[1] if len(lines) > 1 else ""}
     return {"version": "dev", "date": ""}
 
 
