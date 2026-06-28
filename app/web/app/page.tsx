@@ -11,10 +11,8 @@ export default function DashboardPage() {
   const { connected, status, latest: r, history, anomalyReason } = useOBDStream();
   const { tempUnit } = useSettings();
 
-  const isAnomaly = !!r?.anomaly_flag;
   const tempLabel = `°${tempUnit}`;
   const coolantNormal: [number, number] = tempUnit === "F" ? [158, 230] : [70, 110];
-
 
   return (
     <div className="flex flex-col gap-4">
@@ -23,45 +21,18 @@ export default function DashboardPage() {
         <LoggerControl status={status} wsConnected={connected} />
       </div>
 
-      {isAnomaly && <AnomalyBanner reason={anomalyReason} />}
+      {r?.anomaly_flag ? <AnomalyBanner reason={anomalyReason} /> : null}
 
-      {/* Primary diagnostics — the P0100/2B5F relevant PIDs */}
+      {/* Primary diagnostics */}
       <div className="grid grid-cols-2 gap-3">
-        <PIDCard
-          label="MAF"
-          value={r?.maf_gs}
-          unit="g/s"
-          decimals={2}
-          warn={isAnomaly && (r?.maf_gs ?? 99) < 1.5}
-          normalRange={[1.5, 6.0]}
-        />
-        <PIDCard
-          label="LTFT"
-          value={r?.ltft_pct}
-          unit="%"
-          decimals={1}
-          warn={Math.abs(r?.ltft_pct ?? 0) > 15}
-          normalRange={[-10, 10]}
-        />
-        <PIDCard
-          label="STFT"
-          value={r?.stft_pct}
-          unit="%"
-          decimals={1}
-          warn={Math.abs(r?.stft_pct ?? 0) > 10}
-          normalRange={[-10, 10]}
-        />
-        <PIDCard
-          label="RPM"
-          value={r?.rpm}
-          unit="rpm"
-          decimals={0}
-        />
+        <PIDCard label="MAF"  value={r?.maf_gs}   unit="g/s" decimals={2} normalRange={[1.5, 6.0]} />
+        <PIDCard label="LTFT" value={r?.ltft_pct}  unit="%"   decimals={1} normalRange={[-10, 10]} />
+        <PIDCard label="STFT" value={r?.stft_pct}  unit="%"   decimals={1} normalRange={[-10, 10]} />
+        <PIDCard label="RPM"  value={r?.rpm}        unit="rpm" decimals={0} />
       </div>
 
       <Separator className="bg-slate-800" />
 
-      {/* Live chart — MAF + fuel trims */}
       <div>
         <p className="text-xs text-slate-500 mb-1 uppercase tracking-wide">MAF &amp; Fuel Trim (last 120 samples)</p>
         <LiveChart data={history} />
@@ -71,21 +42,21 @@ export default function DashboardPage() {
 
       {/* Secondary PIDs */}
       <div className="grid grid-cols-2 gap-3">
-        <PIDCard label="Coolant" value={toDisplayTemp(r?.coolant_c, tempUnit)} unit={tempLabel} decimals={0} normalRange={coolantNormal} />
-        <PIDCard label="IAT"     value={toDisplayTemp(r?.iat_c, tempUnit)}     unit={tempLabel} decimals={0} />
-        <PIDCard label="MAP"     value={r?.map_kpa}   unit="kPa" decimals={0} />
-        <PIDCard label="Throttle" value={r?.throttle_pct} unit="%" decimals={1} />
-        <PIDCard label="Speed"   value={r?.speed_kph} unit="km/h" decimals={0} />
-        <PIDCard label="Timing"  value={r?.timing_deg} unit="°" decimals={1} />
-        <PIDCard label="O2 B1S1" value={r?.o2_b1s1_v} unit="V" decimals={3} />
-        <PIDCard label="O2 B1S2" value={r?.o2_b1s2_v} unit="V" decimals={3} />
+        <PIDCard label="Coolant"  value={toDisplayTemp(r?.coolant_c, tempUnit)} unit={tempLabel} decimals={0} normalRange={coolantNormal} />
+        <PIDCard label="IAT"      value={toDisplayTemp(r?.iat_c, tempUnit)}      unit={tempLabel} decimals={0} />
+        <PIDCard label="MAP"      value={r?.map_kpa}      unit="kPa" decimals={0} />
+        <PIDCard label="Throttle" value={r?.throttle_pct} unit="%"   decimals={1} />
+        <PIDCard label="Speed"    value={r?.speed_kph}    unit="km/h" decimals={0} />
+        <PIDCard label="Timing"   value={r?.timing_deg}   unit="°"   decimals={1} />
+        <PIDCard label="O2 B1S1"  value={r?.o2_b1s1_v}   unit="V"   decimals={3} />
+        <PIDCard label="O2 B1S2"  value={r?.o2_b1s2_v}   unit="V"   decimals={3} />
       </div>
 
       {status && (
         <p className="text-xs text-slate-600 text-center mt-1">
           {status.logging
             ? `Logging · ${status.elapsed_s.toFixed(0)}s elapsed`
-            : "Not logging — press Start Logging to begin"}
+            : "Not logging — press Start to begin"}
         </p>
       )}
     </div>

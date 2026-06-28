@@ -8,7 +8,6 @@ interface PIDCardProps {
   value: number | null | undefined;
   unit: string;
   decimals?: number;
-  warn?: boolean;
   normalRange?: [number, number];
   className?: string;
 }
@@ -18,21 +17,21 @@ export function PIDCard({
   value,
   unit,
   decimals = 1,
-  warn = false,
   normalRange,
   className,
 }: PIDCardProps) {
   const display = value != null ? value.toFixed(decimals) : "—";
-  const inRange =
-    value != null && normalRange
-      ? value >= normalRange[0] && value <= normalRange[1]
-      : null;
+
+  const outOfRange =
+    value != null && normalRange != null
+      ? value < normalRange[0] || value > normalRange[1]
+      : false;
 
   return (
     <Card
       className={cn(
         "bg-slate-800 border-slate-700 transition-colors",
-        warn && "border-red-500 bg-red-950/30",
+        outOfRange && "border-red-500 bg-red-950/30",
         className
       )}
     >
@@ -46,7 +45,7 @@ export function PIDCard({
           <span
             className={cn(
               "text-3xl font-bold tabular-nums",
-              warn ? "text-red-400" : "text-slate-100"
+              outOfRange ? "text-red-400" : "text-slate-100"
             )}
           >
             {display}
@@ -58,12 +57,12 @@ export function PIDCard({
             variant="outline"
             className={cn(
               "mt-1 text-xs px-1.5 py-0",
-              inRange
-                ? "border-emerald-700 text-emerald-400"
-                : "border-red-700 text-red-400"
+              outOfRange
+                ? "border-red-700 text-red-400"
+                : "border-emerald-700 text-emerald-400"
             )}
           >
-            {inRange ? "normal" : "out of range"}
+            {outOfRange ? "out of range" : "normal"}
           </Badge>
         )}
       </CardContent>
