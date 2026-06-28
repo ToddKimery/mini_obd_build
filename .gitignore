@@ -17,6 +17,13 @@ app/api/__pycache__/
 # Docker build cache
 .dockerignore
 
+# API keys / config (never commit)
+config/
+*/config/
+
+# Design / app-store source assets at repo root (not needed in repo)
+/icons/
+
 # OS
 .DS_Store
 Thumbs.db

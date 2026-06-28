@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { API, type DiagnosticReport, type ReportFinding } from "@/lib/api";
+import { SessionCache } from "@/lib/sessionCache";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
@@ -40,21 +41,51 @@ const FINDING_STYLES: Record<ReportFinding["level"], string> = {
   ok:       "text-emerald-400",
 };
 
-export function DiagnosticReport({ sessionId }: { sessionId: number }) {
+export function DiagnosticReport({
+  sessionId,
+  piOffline = false,
+}: {
+  sessionId: number;
+  piOffline?: boolean;
+}) {
   const [report, setReport] = useState<DiagnosticReport | null>(null);
+  const [fromCache, setFromCache] = useState(false);
   const [loading, setLoading] = useState(true);
   const { tempUnit } = useSettings();
   const tLabel = `°${tempUnit}`;
 
   useEffect(() => {
+    if (piOffline) {
+      // Parent already confirmed Pi is unreachable — skip network call
+      const cached = SessionCache.loadReport(sessionId);
+      setReport(cached);
+      setFromCache(!!cached);
+      setLoading(false);
+      return;
+    }
+
     API.report(sessionId)
-      .then(setReport)
-      .catch(console.error)
+      .then(data => {
+        SessionCache.saveReport(sessionId, data);
+        setReport(data);
+        setFromCache(false);
+      })
+      .catch(() => {
+        const cached = SessionCache.loadReport(sessionId);
+        setReport(cached);
+        setFromCache(!!cached);
+      })
       .finally(() => setLoading(false));
-  }, [sessionId]);
+  }, [sessionId, piOffline]);
 
   if (loading) return <p className="text-slate-500 text-sm">Generating report…</p>;
-  if (!report || "error" in report) return <p className="text-slate-500 text-sm">Report unavailable.</p>;
+  if (!report || "error" in report) {
+    return (
+      <p className="text-slate-500 text-sm">
+        {piOffline || fromCache !== null ? "Report unavailable offline." : "Report unavailable."}
+      </p>
+    );
+  }
 
   const { conclusion: c, findings, metrics: m } = report;
 
@@ -67,6 +98,7 @@ export function DiagnosticReport({ sessionId }: { sessionId: number }) {
           <div>
             <p className="text-xs uppercase tracking-wide opacity-70 mb-0.5">
               {c.confidence} confidence
+              {fromCache && <span className="ml-2 normal-case opacity-60">· cached</span>}
             </p>
             <p className="font-semibold text-base leading-snug">
               {c.fault ?? "No fault detected"}
@@ -88,11 +120,11 @@ export function DiagnosticReport({ sessionId }: { sessionId: number }) {
       {/* ── Key metrics row ── */}
       <div className="grid grid-cols-3 gap-2 text-center text-xs">
         {[
-          { label: "Samples", value: `${report.sample_count}` },
-          { label: "Anomalies", value: `${report.anomaly_count} (${report.anomaly_pct}%)` },
-          { label: "Duration", value: fmtDuration(report.duration_s) },
+          { label: "Samples",     value: `${report.sample_count}` },
+          { label: "Anomalies",   value: `${report.anomaly_count} (${report.anomaly_pct}%)` },
+          { label: "Duration",    value: fmtDuration(report.duration_s) },
           { label: "Idle MAF avg", value: m.maf.idle_avg != null ? `${m.maf.idle_avg} g/s` : "—" },
-          { label: "LTFT peak", value: m.ltft.peak != null ? `${m.ltft.peak > 0 ? "+" : ""}${m.ltft.peak}%` : "—" },
+          { label: "LTFT peak",   value: m.ltft.peak != null ? `${m.ltft.peak > 0 ? "+" : ""}${m.ltft.peak}%` : "—" },
           { label: "Combined FT", value: m.combined_ft_peak != null ? `${m.combined_ft_peak > 0 ? "+" : ""}${m.combined_ft_peak}%` : "—" },
           { label: "Coolant min", value: fmtTemp(m.coolant.min, tLabel) },
           { label: "Coolant max", value: fmtTemp(m.coolant.max, tLabel) },

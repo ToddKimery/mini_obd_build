@@ -5,6 +5,8 @@ and writes to SQLite (same schema as scripts/03_obd_logger.py).
 """
 import asyncio
 import csv
+import math
+import random
 import sqlite3
 import threading
 import time
@@ -54,7 +56,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
             started_at   TEXT NOT NULL,
             port         TEXT,
             protocol     TEXT,
-            notes        TEXT
+            notes        TEXT,
+            locked       INTEGER DEFAULT 0
         )
     """)
     conn.execute("""
@@ -69,6 +72,17 @@ def _init_db(conn: sqlite3.Connection) -> None:
             timing_deg   REAL, o2_b1s1_v REAL, o2_b1s2_v REAL,
             anomaly_flag INTEGER DEFAULT 0,
             anomaly_reason TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_reports (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    INTEGER NOT NULL UNIQUE REFERENCES sessions(session_id),
+            created_at    TEXT NOT NULL,
+            model         TEXT,
+            text          TEXT NOT NULL,
+            input_tokens  INTEGER,
+            output_tokens INTEGER
         )
     """)
     conn.commit()
@@ -127,13 +141,16 @@ class OBDManager:
             "elapsed_s": round(elapsed, 1),
         }
 
-    async def start(self, port: Optional[str] = None) -> dict:
+    async def start(self, port: Optional[str] = None, mock: bool = False) -> dict:
         if self._running:
             return {"ok": False, "error": "Already logging"}
-        if not OBD_AVAILABLE:
-            return {"ok": False, "error": "obd module not installed"}
         self._loop = asyncio.get_running_loop()
-        self._thread = threading.Thread(target=self._log_loop, args=(port,), daemon=True)
+        if mock:
+            self._thread = threading.Thread(target=self._mock_loop, daemon=True)
+        else:
+            if not OBD_AVAILABLE:
+                return {"ok": False, "error": "obd module not installed"}
+            self._thread = threading.Thread(target=self._log_loop, args=(port,), daemon=True)
         self._thread.start()
         return {"ok": True}
 
@@ -148,9 +165,11 @@ class OBDManager:
         if not DB_PATH.exists():
             return []
         with sqlite3.connect(DB_PATH) as db:
+            self._ensure_locked_column(db)
             db.row_factory = sqlite3.Row
             rows = db.execute("""
                 SELECT s.session_id, s.started_at, s.port, s.protocol, s.notes,
+                       s.locked,
                        COUNT(r.id) as sample_count,
                        MAX(r.elapsed_s) as duration_s,
                        SUM(r.anomaly_flag) as anomaly_count
@@ -179,6 +198,92 @@ class OBDManager:
                 "session": dict(session),
                 "readings": [dict(r) for r in readings],
             }
+
+    def get_cached_ai_report(self, session_id: int) -> Optional[dict]:
+        """Return a previously saved AI report, or None if not yet generated."""
+        if not DB_PATH.exists():
+            return None
+        with sqlite3.connect(DB_PATH) as db:
+            self._ensure_ai_reports_table(db)
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM ai_reports WHERE session_id=?", (session_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_ai_report(self, session_id: int, result: dict) -> str:
+        """Persist an AI report to the database (upsert by session_id). Returns created_at."""
+        created_at = datetime.now().isoformat()
+        with sqlite3.connect(DB_PATH) as db:
+            self._ensure_ai_reports_table(db)
+            db.execute("""
+                INSERT OR REPLACE INTO ai_reports
+                    (session_id, created_at, model, text, input_tokens, output_tokens)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                session_id, created_at,
+                result.get("model"), result.get("text"),
+                result.get("input_tokens"), result.get("output_tokens"),
+            ))
+            db.commit()
+        return created_at
+
+    def lock_session(self, session_id: int, locked: bool) -> dict:
+        if not DB_PATH.exists():
+            return {"error": "No database"}
+        with sqlite3.connect(DB_PATH) as db:
+            self._ensure_locked_column(db)
+            rows = db.execute(
+                "UPDATE sessions SET locked=? WHERE session_id=?",
+                (1 if locked else 0, session_id)
+            ).rowcount
+        if rows == 0:
+            return {"error": "Session not found"}
+        return {"ok": True, "locked": locked}
+
+    def delete_session(self, session_id: int) -> dict:
+        if not DB_PATH.exists():
+            return {"error": "No database"}
+        with sqlite3.connect(DB_PATH) as db:
+            self._ensure_locked_column(db)
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT locked FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+            if not row:
+                return {"error": "Session not found"}
+            if row["locked"]:
+                return {"error": "Session is locked — unlock before deleting"}
+            db.execute("DELETE FROM readings   WHERE session_id=?", (session_id,))
+            db.execute("DELETE FROM ai_reports WHERE session_id=?", (session_id,))
+            db.execute("DELETE FROM sessions   WHERE session_id=?", (session_id,))
+            db.commit()
+        return {"ok": True}
+
+    @staticmethod
+    def _ensure_locked_column(conn: sqlite3.Connection) -> None:
+        """Migrate existing databases that pre-date the locked column."""
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN locked INTEGER DEFAULT 0")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    @staticmethod
+    def _ensure_ai_reports_table(conn: sqlite3.Connection) -> None:
+        """Migrate existing databases that pre-date the ai_reports table."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_reports (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id    INTEGER NOT NULL UNIQUE REFERENCES sessions(session_id),
+                created_at    TEXT NOT NULL,
+                model         TEXT,
+                text          TEXT NOT NULL,
+                input_tokens  INTEGER,
+                output_tokens INTEGER
+            )
+        """)
+        conn.commit()
 
     def get_or_generate_plot(self, session_id: int) -> Optional[bytes]:
         """Return PNG bytes for session plot."""
@@ -248,6 +353,78 @@ class OBDManager:
 
     # ── Background thread ─────────────────────────────────────────────────────
 
+    def _mock_loop(self) -> None:
+        """Simulate the P0100/2B5F fault pattern for UI testing."""
+        random.seed()
+        self._connected = True
+        self._port = "mock"
+        self._protocol = "Mock / No hardware"
+        self._running = True
+        self._start_time = time.monotonic()
+        self._sample_count = 0
+
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(DB_PATH)
+        _init_db(db)
+        cur = db.execute(
+            "INSERT INTO sessions (started_at, port, protocol, notes) VALUES (?,?,?,?)",
+            (datetime.now().isoformat(), "mock", "Mock / No hardware", "Mock session"),
+        )
+        db.commit()
+        self._session_id = cur.lastrowid
+
+        self._emit({"type": "status", **self.status()})
+
+        t = 0.0
+        while self._running:
+            elapsed = round(time.monotonic() - self._start_time, 2)
+            # Simulate fault pattern: MAF low at idle, LTFT climbing
+            rpm     = 820 + random.gauss(0, 15)
+            maf     = 0.85 + random.gauss(0, 0.08)   # too low — fault
+            ltft    = min(22.0, 8.0 + (t / 300) * 18.0) + random.gauss(0, 0.5)
+            stft    = max(-15, min(15, 8.5 + 3.5 * math.sin(t * 0.3) + random.gauss(0, 1.2)))
+            coolant = 90.0 + random.gauss(0, 0.4)
+            map_kpa = 40 + random.gauss(0, 2)
+            o2      = max(0.05, min(0.95, 0.15 + 0.12 * math.sin(t * 0.8) + random.gauss(0, 0.04)))
+
+            row = {
+                "ts": datetime.now().isoformat(), "elapsed_s": elapsed,
+                "rpm": round(rpm, 1),       "maf_gs": round(maf, 3),
+                "stft_pct": round(stft, 2), "ltft_pct": round(ltft, 2),
+                "coolant_c": round(coolant, 1), "map_kpa": round(map_kpa, 1),
+                "iat_c": 28.0, "throttle_pct": 3.5, "speed_kph": 0.0,
+                "timing_deg": round(6 + random.gauss(0, 1), 1),
+                "o2_b1s1_v": round(o2, 3), "o2_b1s2_v": round(0.55 + random.gauss(0, 0.02), 3),
+            }
+            flag, reason = _detect_anomaly(row)
+            row["anomaly_flag"] = flag
+            row["anomaly_reason"] = reason
+
+            db.execute("""
+                INSERT INTO readings (
+                    session_id, ts, elapsed_s, rpm, coolant_c, maf_gs,
+                    throttle_pct, map_kpa, iat_c, speed_kph, stft_pct, ltft_pct,
+                    timing_deg, o2_b1s1_v, o2_b1s2_v, anomaly_flag, anomaly_reason
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (self._session_id, row["ts"], elapsed, row["rpm"], row["coolant_c"],
+                  row["maf_gs"], row["throttle_pct"], row["map_kpa"], row["iat_c"],
+                  row["speed_kph"], row["stft_pct"], row["ltft_pct"], row["timing_deg"],
+                  row["o2_b1s1_v"], row["o2_b1s2_v"], flag, reason))
+            db.commit()
+
+            self._sample_count += 1
+            row["type"] = "reading"
+            row["sample_count"] = self._sample_count
+            self._emit(row)
+            t += 1.0
+            time.sleep(1.0)
+
+        db.close()
+        self._connected = False
+        self._running = False
+        self._emit({"type": "status", "connected": False, "logging": False,
+                    "session_id": self._session_id})
+
     def _log_loop(self, port: Optional[str]) -> None:
         port = port or self._find_port()
         if not port:
@@ -292,14 +469,7 @@ class OBDManager:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
 
-        self._emit({
-            "type": "status",
-            "connected": True,
-            "logging": True,
-            "session_id": self._session_id,
-            "port": port,
-            "protocol": self._protocol,
-        })
+        self._emit({"type": "status", **self.status()})
 
         try:
             while self._running:

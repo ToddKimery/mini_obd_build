@@ -83,7 +83,7 @@ export default function DashboardPage() {
       {status && (
         <p className="text-xs text-slate-600 text-center mt-1">
           {status.logging
-            ? `Logging · ${status.elapsed_s.toFixed(0)}s elapsed`
+            ? `Logging · ${(status.elapsed_s ?? 0).toFixed(0)}s elapsed`
             : "Not logging — press Start to begin"}
         </p>
       )}

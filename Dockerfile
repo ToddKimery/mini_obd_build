@@ -69,7 +69,8 @@ RUN /root/obd_env/bin/pip install --prefer-binary \
         "uvicorn[standard]" \
         websockets \
         python-multipart \
-        aiofiles
+        aiofiles \
+        anthropic
 
 # ── Copy scripts + app ────────────────────────────────────────
 COPY scripts/ /root/mini_obd/scripts/
@@ -82,5 +83,9 @@ ENV VIRTUAL_ENV="/root/obd_env"
 
 WORKDIR /root/mini_obd/app/api
 
+RUN chmod +x /root/mini_obd/scripts/start.sh
+
 EXPOSE 8080
+# HTTP for local dev (localhost is treated as secure by Chrome — SW + PWA work)
+# Pi deployment uses start.sh which generates a self-signed cert and runs HTTPS
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

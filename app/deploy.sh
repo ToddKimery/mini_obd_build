@@ -22,7 +22,7 @@ echo ""
 
 # ── Build Next.js ─────────────────────────────────────────────────────────────
 if [ "$API_ONLY" = false ]; then
-  echo "[1/3] Building Next.js static export..."
+  echo "[1/4] Building Next.js static export..."
   cd app/web
   npm run build
   cd ../..
@@ -31,7 +31,7 @@ fi
 
 # ── Sync backend ──────────────────────────────────────────────────────────────
 if [ "$WEB_ONLY" = false ]; then
-  echo "[2/3] Syncing API backend..."
+  echo "[2/4] Syncing API backend..."
   ssh "$PI_HOST" "mkdir -p $PI_BASE/api"
   rsync -avz --delete \
     --exclude '__pycache__' \
@@ -41,31 +41,45 @@ if [ "$WEB_ONLY" = false ]; then
   echo "      Installing/updating Python deps on Pi..."
   ssh "$PI_HOST" "
     /home/lola/obd_env/bin/pip install -q --upgrade \
-      fastapi uvicorn[standard] websockets python-multipart aiofiles
+      fastapi 'uvicorn[standard]' websockets python-multipart aiofiles anthropic
   "
 fi
 
 # ── Sync frontend static export ───────────────────────────────────────────────
 if [ "$API_ONLY" = false ]; then
-  echo "[3/3] Syncing web static export..."
+  echo "[3/4] Syncing web static export..."
   ssh "$PI_HOST" "mkdir -p $PI_BASE/web/out"
   rsync -avz --delete \
     app/web/out/ \
     "$PI_HOST:$PI_BASE/web/out/"
 fi
 
-# ── Install + restart systemd service ────────────────────────────────────────
-echo ""
-echo "==> Restarting mini_obd_api service..."
+# ── One-time system config (idempotent) ───────────────────────────────────────
+echo "[4/4] Applying system config..."
 ssh "$PI_HOST" "
+  # Sudoers rule so the service can sync clock from the phone
+  SUDOERS=/etc/sudoers.d/mini-obd-time
+  if [ ! -f \$SUDOERS ]; then
+    echo 'lola ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-time *' | sudo tee \$SUDOERS > /dev/null
+    echo 'lola ALL=(ALL) NOPASSWD: /bin/date -s *' | sudo tee -a \$SUDOERS > /dev/null
+    sudo chmod 0440 \$SUDOERS
+    echo '      Clock-sync sudoers rule added.'
+  else
+    echo '      Clock-sync sudoers rule already present.'
+  fi
+
+  # Install + enable systemd service
   sudo cp $PI_BASE/api/mini_obd_api.service /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable mini_obd_api
   sudo systemctl restart mini_obd_api
-  sleep 1
-  systemctl is-active mini_obd_api && echo 'Service: running' || echo 'Service: FAILED'
+  sleep 2
+  systemctl is-active mini_obd_api && echo '      Service: running' || echo '      Service: FAILED — check: journalctl -u mini_obd_api -n 50'
 "
 
 echo ""
-echo "==> Done. Open http://mini-obd.local in Chrome"
-echo "    Or via AP: http://192.168.4.1"
+echo "==> Deploy complete."
+echo "    App:      http://mini-obd.local:8080"
+echo "    Via AP:   http://192.168.4.1:8080"
+echo ""
+echo "    Add your Anthropic API key via the gear icon in the app."

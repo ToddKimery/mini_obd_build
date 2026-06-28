@@ -6,7 +6,21 @@ After=network.target
 Type=simple
 User=lola
 WorkingDirectory=/home/lola/mini_obd/app/api
-ExecStart=/home/lola/obd_env/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --log-level info
+ExecStartPre=/bin/bash -c '\
+    mkdir -p /home/lola/mini_obd/config && \
+    if [ ! -f /home/lola/mini_obd/config/cert.pem ]; then \
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /home/lola/mini_obd/config/key.pem \
+            -out /home/lola/mini_obd/config/cert.pem \
+            -subj "/CN=mini-obd" \
+            -addext "subjectAltName=IP:192.168.4.1,IP:127.0.0.1,DNS:localhost,DNS:mini-obd.local"; \
+    fi'
+ExecStart=/home/lola/obd_env/bin/uvicorn main:app \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --ssl-keyfile /home/lola/mini_obd/config/key.pem \
+    --ssl-certfile /home/lola/mini_obd/config/cert.pem \
+    --log-level info
 Restart=on-failure
 RestartSec=5
 

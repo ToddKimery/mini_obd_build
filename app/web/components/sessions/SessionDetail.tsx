@@ -2,26 +2,39 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { API, type SessionDetail as TSessionDetail } from "@/lib/api";
+import { SessionCache } from "@/lib/sessionCache";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { DiagnosticReport } from "@/components/sessions/DiagnosticReport";
+import { AIReport } from "@/components/sessions/AIReport";
 
 function fmtDate(s: string) {
   return new Date(s).toLocaleString(undefined, {
     month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
 }
 
 export function SessionDetail({ sessionId }: { sessionId: number }) {
   const [detail, setDetail] = useState<TSessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fromCache, setFromCache] = useState(false);
   const [plotOpen, setPlotOpen] = useState(false);
 
   useEffect(() => {
     API.session(sessionId)
-      .then(setDetail)
-      .catch(console.error)
+      .then(data => {
+        SessionCache.saveDetail(sessionId, data);
+        setDetail(data);
+        setFromCache(false);
+      })
+      .catch(() => {
+        const cached = SessionCache.loadDetail(sessionId);
+        if (cached) {
+          setDetail(cached);
+          setFromCache(true);
+        }
+      })
       .finally(() => setLoading(false));
   }, [sessionId]);
 
@@ -53,6 +66,13 @@ export function SessionDetail({ sessionId }: { sessionId: number }) {
         </Link>
       </div>
 
+      {fromCache && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-950/50 border border-amber-800/60 text-amber-300 text-xs">
+          <span className="shrink-0">⚡</span>
+          <span>Pi offline — showing locally cached data</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div className="bg-slate-800 rounded-lg p-3 border border-slate-700">
           <p className="text-slate-400 text-xs uppercase tracking-wide mb-1">Samples</p>
@@ -81,28 +101,36 @@ export function SessionDetail({ sessionId }: { sessionId: number }) {
       {/* Diagnostic report */}
       <div>
         <p className="text-xs text-slate-500 uppercase tracking-wide mb-3">Diagnostic Report</p>
-        <DiagnosticReport sessionId={sessionId} />
+        <DiagnosticReport sessionId={sessionId} piOffline={fromCache} />
       </div>
 
+      {/* AI Analysis */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-xs text-slate-500 uppercase tracking-wide">Analysis Plot</p>
-          <button
-            onClick={() => setPlotOpen(true)}
-            className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-          >
-            expand ↗
-          </button>
-        </div>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={API.plotUrl(sessionId)}
-          alt={`Session ${sessionId} plot`}
-          className="w-full rounded-lg border border-slate-700 cursor-pointer"
-          onClick={() => setPlotOpen(true)}
-          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-        />
+        <p className="text-xs text-slate-500 uppercase tracking-wide mb-3">AI Analysis</p>
+        <AIReport sessionId={sessionId} piOffline={fromCache} />
       </div>
+
+      {!fromCache && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-slate-500 uppercase tracking-wide">Analysis Plot</p>
+            <button
+              onClick={() => setPlotOpen(true)}
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              expand ↗
+            </button>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={API.plotUrl(sessionId)}
+            alt={`Session ${sessionId} plot`}
+            className="w-full rounded-lg border border-slate-700 cursor-pointer"
+            onClick={() => setPlotOpen(true)}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        </div>
+      )}
 
       <Modal
         open={plotOpen}

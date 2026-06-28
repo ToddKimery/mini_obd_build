@@ -1,0 +1,11 @@
+[Unit]
+Description=Mini OBD — pull updates from GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lola
+ExecStart=/bin/bash /home/lola/mini_obd/scripts/update.sh
+StandardOutput=journal
+StandardError=journal

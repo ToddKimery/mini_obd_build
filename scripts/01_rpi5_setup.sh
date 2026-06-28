@@ -60,7 +60,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     wireless-tools \
     network-manager \
     nmtui \
-    cpufrequtils
+    cpufrequtils \
+    nodejs \
+    npm
 
 # ── NOTE: python3-bluez is NOT available on Ubuntu 24.04 ─────
 # It was replaced - bleak pip package handles BLE instead
@@ -168,6 +170,17 @@ usermod -aG bluetooth "${ACTUAL_USER}"
 echo "  ✓ Added to dialout and bluetooth groups"
 echo "  ⚠ Logout/login required for group changes to take effect"
 
+# ── Step 7b: Allow lola to set system time (phone → Pi sync) ─
+echo "[7b] Adding sudoers rule for clock sync..."
+SUDOERS_FILE="/etc/sudoers.d/mini-obd-time"
+cat > "${SUDOERS_FILE}" << EOF
+# Allow mini-obd service user to set system clock from phone
+${ACTUAL_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-time *
+${ACTUAL_USER} ALL=(ALL) NOPASSWD: /bin/date -s *
+EOF
+chmod 0440 "${SUDOERS_FILE}"
+echo "  ✓ ${ACTUAL_USER} can now set system time without a password"
+
 # ── Step 8: Performance & Boot Config ────────────────────────
 echo "[8/8] Optimising RPi5 for headless server use..."
 
@@ -202,6 +215,50 @@ EOF
 systemctl daemon-reload
 echo "  Service created (disabled - enable after testing)"
 
+# ── Step 9: Git auto-update timer ────────────────────────────
+echo "[9/9] Setting up GitHub auto-update timer..."
+
+# Install systemd units for auto-update
+cp "${USER_HOME}/mini_obd/scripts/mini_obd_update.service" /etc/systemd/system/
+cp "${USER_HOME}/mini_obd/scripts/mini_obd_update.timer"   /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable mini_obd_update.timer
+systemctl start  mini_obd_update.timer
+echo "  ✓ Auto-update timer enabled (runs 2 min after boot, then every 30 min)"
+
+# Allow lola to restart the service from the update script
+SUDOERS_UPDATE="/etc/sudoers.d/mini-obd-update"
+if [ ! -f "${SUDOERS_UPDATE}" ]; then
+    echo "${ACTUAL_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart mini_obd_api" \
+        | tee "${SUDOERS_UPDATE}" > /dev/null
+    chmod 0440 "${SUDOERS_UPDATE}"
+    echo "  ✓ Sudoers rule for service restart added"
+fi
+
+# Generate SSH key for GitHub (if not already present)
+SSH_KEY="${USER_HOME}/.ssh/id_ed25519"
+if [ ! -f "${SSH_KEY}" ]; then
+    sudo -u "${ACTUAL_USER}" ssh-keygen -t ed25519 -C "mini-obd-pi" -N "" -f "${SSH_KEY}"
+    echo ""
+    echo "  ┌─────────────────────────────────────────────────────────┐"
+    echo "  │  Add this SSH public key to GitHub → Settings →         │"
+    echo "  │  SSH and GPG keys → New SSH key                         │"
+    echo "  └─────────────────────────────────────────────────────────┘"
+    cat "${SSH_KEY}.pub"
+    echo ""
+fi
+
+# Configure git repo remote (if GITHUB_REPO env var provided)
+if [ -n "${GITHUB_REPO}" ] && [ -d "${USER_HOME}/mini_obd" ]; then
+    cd "${USER_HOME}/mini_obd"
+    sudo -u "${ACTUAL_USER}" bash -c "
+        git init -q
+        git remote remove origin 2>/dev/null || true
+        git remote add origin ${GITHUB_REPO}
+        echo 'Remote set to ${GITHUB_REPO}'
+    "
+fi
+
 # ── Final Summary ─────────────────────────────────────────────
 echo ""
 echo "================================================"
@@ -217,9 +274,9 @@ echo "  IMPORTANT: Log out and back in for group"
 echo "  membership (dialout) to take effect"
 echo ""
 echo "  Next steps:"
-echo "  1. Log out and back in"
-echo "  2. Plug K+DCAN into RPi5 USB port"
-echo "  3. Check: ls -la /dev/kdcan"
-echo "  4. Activate env: source ~/obd_env/bin/activate"
-echo "  5. Test: python ~/mini_obd/scripts/02_test_connection.py"
+echo "  1. Log out and back in (group membership)"
+echo "  2. Add the SSH key printed above to GitHub → Settings → SSH keys"
+echo "  3. cd ~/mini_obd && git remote add origin git@github.com:YOU/REPO.git"
+echo "  4. bash ~/mini_obd/scripts/update.sh   (first pull + build)"
+echo "  5. Open app: http://192.168.4.1:8080"
 echo ""

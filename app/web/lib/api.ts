@@ -32,6 +32,7 @@ export interface SessionSummary {
   sample_count: number;
   duration_s: number | null;
   anomaly_count: number;
+  locked: number;  // 0 | 1
 }
 
 export interface Reading {
@@ -99,6 +100,22 @@ export interface DiagnosticReport {
   };
 }
 
+export interface APIKeyStatus {
+  configured: boolean;
+  source: "env" | "file" | null;
+}
+
+export interface AIReport {
+  text?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached?: boolean;
+  created_at?: string;
+  error?: string;
+  message?: string;
+}
+
 export const API = {
   status:       ()                    => api<LoggerStatus>("/api/status"),
   start:        (port?: string)       => api<{ ok: boolean }>("/api/logger/start", {
@@ -109,5 +126,32 @@ export const API = {
   sessions:     ()                    => api<SessionSummary[]>("/api/sessions"),
   session:      (id: number)          => api<SessionDetail>(`/api/sessions/${id}`),
   report:       (id: number)          => api<DiagnosticReport>(`/api/sessions/${id}/report`),
-  plotUrl:      (id: number)          => `${BASE}/api/sessions/${id}/plot`,
+  cachedAiReport:  (id: number)          => api<AIReport>(`/api/sessions/${id}/ai-report`),
+  aiReport:        (id: number, force = false) =>
+    api<AIReport>(`/api/sessions/${id}/ai-report${force ? "?force=true" : ""}`, { method: "POST" }),
+  apiKeyStatus:    ()                    => api<APIKeyStatus>("/api/config/api-key/status"),
+  setApiKey:       (key: string)         => api<{ ok: boolean }>("/api/config/api-key", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  }),
+  plotUrl:         (id: number)          => `${BASE}/api/sessions/${id}/plot`,
+  lockSession:     (id: number, locked: boolean) =>
+    api<{ ok: boolean; locked: boolean }>(`/api/sessions/${id}/lock`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ locked }),
+    }),
+  deleteSession:   (id: number) => api<{ ok: boolean }>(`/api/sessions/${id}`, { method: "DELETE" }),
+  version:         ()                    => api<{ version: string; date: string }>("/api/version"),
+  forceUpdate:     ()                    => api<{ ok: boolean; error?: string }>("/api/update?force=true", { method: "POST" }),
+  updateLog:       ()                    => api<{ lines: string[] }>("/api/update/log"),
+  syncTime:        ()                    => api<{ ok: boolean; set_to?: string; error?: string }>(
+    "/api/sync-time",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ iso: new Date().toISOString() }),
+    }
+  ),
 };
