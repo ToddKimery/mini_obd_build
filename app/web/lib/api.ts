@@ -1,12 +1,12 @@
 const BASE =
   typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.host}`
-    : "http://192.168.4.1";
+    : "http://192.168.4.1:8080";
 
 export const WS_URL =
   typeof window !== "undefined"
     ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`
-    : "ws://192.168.4.1/ws";
+    : "ws://192.168.4.1:8080/ws";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, options);
