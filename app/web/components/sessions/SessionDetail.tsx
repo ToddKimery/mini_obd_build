@@ -4,6 +4,7 @@ import Link from "next/link";
 import { API, type SessionDetail as TSessionDetail } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
+import { DiagnosticReport } from "@/components/sessions/DiagnosticReport";
 
 function fmtDate(s: string) {
   return new Date(s).toLocaleString(undefined, {
@@ -75,6 +76,12 @@ export function SessionDetail({ sessionId }: { sessionId: number }) {
             {avgLtft != null ? `${avgLtft.toFixed(1)}%` : "—"}
           </p>
         </div>
+      </div>
+
+      {/* Diagnostic report */}
+      <div>
+        <p className="text-xs text-slate-500 uppercase tracking-wide mb-3">Diagnostic Report</p>
+        <DiagnosticReport sessionId={sessionId} />
       </div>
 
       <div>

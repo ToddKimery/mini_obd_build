@@ -12,6 +12,7 @@ from fastapi.responses import Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from obd_manager import OBDManager
+from report import generate as generate_report
 
 app = FastAPI(title="Mini OBD API", docs_url="/api/docs")
 app.add_middleware(
@@ -100,6 +101,14 @@ async def start_logger(port: Optional[str] = None) -> dict:
     return result
 
 
+@app.post("/api/logger/mock")
+async def start_mock() -> dict:
+    result = await obd_mgr.start(mock=True)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error"))
+    return result
+
+
 @app.post("/api/logger/stop")
 async def stop_logger() -> dict:
     return await obd_mgr.stop()
@@ -116,6 +125,14 @@ async def get_session(session_id: int) -> dict:
     if "error" in data:
         raise HTTPException(status_code=404, detail=data["error"])
     return data
+
+
+@app.get("/api/sessions/{session_id}/report")
+async def get_report(session_id: int) -> dict:
+    data = obd_mgr.get_session_data(session_id)
+    if "error" in data:
+        raise HTTPException(status_code=404, detail=data["error"])
+    return generate_report(data["session"], data["readings"])
 
 
 @app.get("/api/sessions/{session_id}/plot")

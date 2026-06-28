@@ -66,6 +66,39 @@ export interface SessionDetail {
   readings: Reading[];
 }
 
+export interface ReportFinding {
+  level: "critical" | "warning" | "ok";
+  tag: string;
+  text: string;
+}
+
+export interface DiagnosticReport {
+  session_id: number;
+  started_at: string;
+  duration_s: number;
+  sample_count: number;
+  idle_samples: number;
+  anomaly_count: number;
+  anomaly_pct: number;
+  metrics: {
+    maf: { idle_avg: number | null; idle_min: number | null; idle_max: number | null; all_max: number | null };
+    ltft: { avg: number | null; peak: number | null; threshold_crossed_at_s: number | null };
+    stft: { avg: number | null };
+    combined_ft_peak: number | null;
+    coolant: { min: number | null; max: number | null };
+    o2_b1s1_stddev: number | null;
+  };
+  findings: ReportFinding[];
+  conclusion: {
+    status: "critical" | "warning" | "ok" | "inconclusive";
+    fault: string | null;
+    confidence: "high" | "medium" | "low";
+    summary: string;
+    likely_causes: string[];
+    next_steps: string[];
+  };
+}
+
 export const API = {
   status:       ()                    => api<LoggerStatus>("/api/status"),
   start:        (port?: string)       => api<{ ok: boolean }>("/api/logger/start", {
@@ -75,5 +108,6 @@ export const API = {
   stop:         ()                    => api<{ ok: boolean; session_id: number }>("/api/logger/stop", { method: "POST" }),
   sessions:     ()                    => api<SessionSummary[]>("/api/sessions"),
   session:      (id: number)          => api<SessionDetail>(`/api/sessions/${id}`),
+  report:       (id: number)          => api<DiagnosticReport>(`/api/sessions/${id}/report`),
   plotUrl:      (id: number)          => `${BASE}/api/sessions/${id}/plot`,
 };
