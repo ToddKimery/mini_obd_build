@@ -1,16 +1,19 @@
 "use client";
+import { useState } from "react";
 import { useOBDStream } from "@/hooks/useOBDStream";
 import { useSettings, toDisplayTemp } from "@/lib/settings";
 import { PIDCard } from "@/components/dashboard/PIDCard";
 import { LiveChart } from "@/components/dashboard/LiveChart";
 import { AnomalyBanner } from "@/components/dashboard/AnomalyBanner";
 import { LoggerControl } from "@/components/dashboard/LoggerControl";
+import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 
 export default function DashboardPage() {
   const { connected, status, latest: r, history, anomalyReason } = useOBDStream();
   const { tempUnit } = useSettings();
 
+  const [chartOpen, setChartOpen] = useState(false);
   const tempLabel = `°${tempUnit}`;
   const coolantNormal: [number, number] = tempUnit === "F" ? [158, 230] : [70, 110];
 
@@ -34,9 +37,34 @@ export default function DashboardPage() {
       <Separator className="bg-slate-800" />
 
       <div>
-        <p className="text-xs text-slate-500 mb-1 uppercase tracking-wide">MAF &amp; Fuel Trim (last 120 samples)</p>
-        <LiveChart data={history} />
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-xs text-slate-500 uppercase tracking-wide">MAF &amp; Fuel Trim (last 120 samples)</p>
+          <button
+            onClick={() => setChartOpen(true)}
+            className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            expand ↗
+          </button>
+        </div>
+        <div
+          className="cursor-pointer"
+          onClick={() => setChartOpen(true)}
+          title="Tap to expand"
+        >
+          <LiveChart data={history} />
+        </div>
       </div>
+
+      <Modal
+        open={chartOpen}
+        onClose={() => setChartOpen(false)}
+        title="MAF & Fuel Trim"
+        className="max-w-2xl"
+      >
+        <div className="px-2 pb-4">
+          <LiveChart data={history} height="h-[55vh]" />
+        </div>
+      </Modal>
 
       <Separator className="bg-slate-800" />
 

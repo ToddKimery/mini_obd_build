@@ -12,7 +12,7 @@ import {
 } from "recharts";
 import type { Reading } from "@/lib/api";
 
-interface Props { data: Reading[] }
+interface Props { data: Reading[]; height?: string }
 
 const COLORS = {
   maf:  "#38bdf8",
@@ -39,9 +39,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export default function ChartInner({ data }: Props) {
+export default function ChartInner({ data, height = "h-64" }: Props) {
   return (
-    <div className="w-full h-64 mt-2">
+    <div className={`w-full ${height} mt-2`}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#334155" />

@@ -2,13 +2,13 @@
 import dynamic from "next/dynamic";
 import type { Reading } from "@/lib/api";
 
-// Recharts must be dynamically imported (no SSR) for static export
 const Chart = dynamic(() => import("./_ChartInner"), { ssr: false });
 
 interface LiveChartProps {
   data: Reading[];
+  height?: string;
 }
 
-export function LiveChart({ data }: LiveChartProps) {
-  return <Chart data={data} />;
+export function LiveChart({ data, height }: LiveChartProps) {
+  return <Chart data={data} height={height} />;
 }
