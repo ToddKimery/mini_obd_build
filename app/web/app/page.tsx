@@ -1,5 +1,6 @@
 "use client";
 import { useOBDStream } from "@/hooks/useOBDStream";
+import { useSettings, toDisplayTemp } from "@/lib/settings";
 import { PIDCard } from "@/components/dashboard/PIDCard";
 import { LiveChart } from "@/components/dashboard/LiveChart";
 import { AnomalyBanner } from "@/components/dashboard/AnomalyBanner";
@@ -8,8 +9,12 @@ import { Separator } from "@/components/ui/separator";
 
 export default function DashboardPage() {
   const { connected, status, latest: r, history, anomalyReason } = useOBDStream();
+  const { tempUnit } = useSettings();
 
   const isAnomaly = !!r?.anomaly_flag;
+  const tempLabel = `°${tempUnit}`;
+  const coolantNormal: [number, number] = tempUnit === "F" ? [158, 230] : [70, 110];
+
 
   return (
     <div className="flex flex-col gap-4">
@@ -66,8 +71,8 @@ export default function DashboardPage() {
 
       {/* Secondary PIDs */}
       <div className="grid grid-cols-2 gap-3">
-        <PIDCard label="Coolant" value={r?.coolant_c} unit="°C" decimals={0} normalRange={[70, 110]} />
-        <PIDCard label="IAT"     value={r?.iat_c}     unit="°C" decimals={0} />
+        <PIDCard label="Coolant" value={toDisplayTemp(r?.coolant_c, tempUnit)} unit={tempLabel} decimals={0} normalRange={coolantNormal} />
+        <PIDCard label="IAT"     value={toDisplayTemp(r?.iat_c, tempUnit)}     unit={tempLabel} decimals={0} />
         <PIDCard label="MAP"     value={r?.map_kpa}   unit="kPa" decimals={0} />
         <PIDCard label="Throttle" value={r?.throttle_pct} unit="%" decimals={1} />
         <PIDCard label="Speed"   value={r?.speed_kph} unit="km/h" decimals={0} />
