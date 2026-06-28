@@ -1,0 +1,9 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+websockets==13.1
+python-multipart==0.0.17
+obd==0.7.3
+pyserial==3.5
+pandas==2.2.3
+matplotlib==3.9.3
+aiofiles==24.1.0

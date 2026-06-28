@@ -1,0 +1,88 @@
+"use client";
+import { useOBDStream } from "@/hooks/useOBDStream";
+import { PIDCard } from "@/components/dashboard/PIDCard";
+import { LiveChart } from "@/components/dashboard/LiveChart";
+import { AnomalyBanner } from "@/components/dashboard/AnomalyBanner";
+import { LoggerControl } from "@/components/dashboard/LoggerControl";
+import { Separator } from "@/components/ui/separator";
+
+export default function DashboardPage() {
+  const { connected, status, latest: r, history, anomalyReason } = useOBDStream();
+
+  const isAnomaly = !!r?.anomaly_flag;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-slate-100">Live Dashboard</h1>
+        <LoggerControl status={status} wsConnected={connected} />
+      </div>
+
+      {isAnomaly && <AnomalyBanner reason={anomalyReason} />}
+
+      {/* Primary diagnostics — the P0100/2B5F relevant PIDs */}
+      <div className="grid grid-cols-2 gap-3">
+        <PIDCard
+          label="MAF"
+          value={r?.maf_gs}
+          unit="g/s"
+          decimals={2}
+          warn={isAnomaly && (r?.maf_gs ?? 99) < 1.5}
+          normalRange={[1.5, 6.0]}
+        />
+        <PIDCard
+          label="LTFT"
+          value={r?.ltft_pct}
+          unit="%"
+          decimals={1}
+          warn={Math.abs(r?.ltft_pct ?? 0) > 15}
+          normalRange={[-10, 10]}
+        />
+        <PIDCard
+          label="STFT"
+          value={r?.stft_pct}
+          unit="%"
+          decimals={1}
+          warn={Math.abs(r?.stft_pct ?? 0) > 10}
+          normalRange={[-10, 10]}
+        />
+        <PIDCard
+          label="RPM"
+          value={r?.rpm}
+          unit="rpm"
+          decimals={0}
+        />
+      </div>
+
+      <Separator className="bg-slate-800" />
+
+      {/* Live chart — MAF + fuel trims */}
+      <div>
+        <p className="text-xs text-slate-500 mb-1 uppercase tracking-wide">MAF &amp; Fuel Trim (last 120 samples)</p>
+        <LiveChart data={history} />
+      </div>
+
+      <Separator className="bg-slate-800" />
+
+      {/* Secondary PIDs */}
+      <div className="grid grid-cols-2 gap-3">
+        <PIDCard label="Coolant" value={r?.coolant_c} unit="°C" decimals={0} normalRange={[70, 110]} />
+        <PIDCard label="IAT"     value={r?.iat_c}     unit="°C" decimals={0} />
+        <PIDCard label="MAP"     value={r?.map_kpa}   unit="kPa" decimals={0} />
+        <PIDCard label="Throttle" value={r?.throttle_pct} unit="%" decimals={1} />
+        <PIDCard label="Speed"   value={r?.speed_kph} unit="km/h" decimals={0} />
+        <PIDCard label="Timing"  value={r?.timing_deg} unit="°" decimals={1} />
+        <PIDCard label="O2 B1S1" value={r?.o2_b1s1_v} unit="V" decimals={3} />
+        <PIDCard label="O2 B1S2" value={r?.o2_b1s2_v} unit="V" decimals={3} />
+      </div>
+
+      {status && (
+        <p className="text-xs text-slate-600 text-center mt-1">
+          {status.logging
+            ? `Logging · ${status.elapsed_s.toFixed(0)}s elapsed`
+            : "Not logging — press Start Logging to begin"}
+        </p>
+      )}
+    </div>
+  );
+}

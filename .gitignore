@@ -1,0 +1,22 @@
+# Node
+app/web/node_modules/
+app/web/.next/
+app/web/out/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+app/api/__pycache__/
+
+# Data / logs (generated at runtime)
+*/data/*.db
+*/data/*.csv
+*/logs/
+
+# Docker build cache
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
