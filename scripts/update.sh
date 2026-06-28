@@ -1,11 +1,14 @@
 #!/bin/bash
-# Pull latest code from GitHub and rebuild/restart mini-obd.
+# Pull latest image from GHCR and restart the container.
 # Runs automatically via mini_obd_update.timer (every 30 min when online)
 # or manually:  bash ~/mini_obd/scripts/update.sh
 
-REPO_DIR="/home/lola/mini_obd"
-LOG="$REPO_DIR/logs/update.log"
-mkdir -p "$REPO_DIR/logs"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+IMAGE="ghcr.io/toddkimery/mini_obd_build:latest"
+CONTAINER="mini-obd"
+LOG="$HOME/mini_obd/logs/update.log"
+mkdir -p "$HOME/mini_obd/logs"
 
 FORCE=false
 for arg in "$@"; do
@@ -14,48 +17,46 @@ done
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
-# ── Internet check ────────────────────────────────────────────────────────────
-if ! curl -sf --max-time 8 https://api.github.com > /dev/null 2>&1; then
+# ── Internet check ─────────────────────────────────────────────
+if ! /usr/bin/curl -sf --max-time 8 https://ghcr.io > /dev/null 2>&1; then
     log "No internet — skipping update"
     exit 0
 fi
 
 log "=== mini-obd update started${FORCE:+ (forced)} ==="
-cd "$REPO_DIR"
 
-# ── Git pull ──────────────────────────────────────────────────────────────────
-OLD=$(git rev-parse HEAD 2>/dev/null || echo "none")
-git pull --ff-only origin main 2>&1 | tee -a "$LOG"
-NEW=$(git rev-parse HEAD)
+# ── Pull latest image ──────────────────────────────────────────
+OLD_ID=$(docker inspect --format='{{.Id}}' "$IMAGE" 2>/dev/null || echo "none")
+log "Pulling $IMAGE ..."
+docker pull "$IMAGE" 2>&1 | tee -a "$LOG"
+NEW_ID=$(docker inspect --format='{{.Id}}' "$IMAGE" 2>/dev/null || echo "unknown")
 
-if [ "$OLD" = "$NEW" ] && [ "$FORCE" = false ]; then
-    log "Already up to date ($NEW)"
+if [ "$OLD_ID" = "$NEW_ID" ] && [ "$FORCE" = false ]; then
+    log "Already up to date"
     log "=== Done ==="
     exit 0
 fi
 
-[ "$OLD" != "$NEW" ] && log "Updated $OLD → $NEW"
+log "Image updated — restarting container..."
 
-# ── Rebuild frontend ──────────────────────────────────────────────────────────
-WEB_CHANGED=$(git diff --name-only "$OLD" "$NEW" 2>/dev/null | grep -c "^app/web/" || true)
-if [ "$FORCE" = true ] || [ "$WEB_CHANGED" -gt 0 ]; then
-    log "Rebuilding frontend..."
-    cd "$REPO_DIR/app/web"
-    npm install --prefer-offline --silent
-    npm run build 2>&1 | tee -a "$LOG"
-    log "Frontend rebuilt"
-    cd "$REPO_DIR"
-fi
+# ── Restart container ──────────────────────────────────────────
+docker stop "$CONTAINER" 2>/dev/null || true
+docker rm   "$CONTAINER" 2>/dev/null || true
 
-# ── Update Python deps ────────────────────────────────────────────────────────
-REQS_CHANGED=$(git diff --name-only "$OLD" "$NEW" 2>/dev/null | grep -c "requirements.txt" || true)
-if [ "$FORCE" = true ] || [ "$REQS_CHANGED" -gt 0 ]; then
-    log "Updating Python deps..."
-    /home/lola/obd_env/bin/pip install -q -r "$REPO_DIR/app/api/requirements.txt"
-    log "Python deps updated"
-fi
+# Find OBD device — try known paths
+OBD_DEVICE=""
+for dev in /dev/kdcan /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0; do
+    [ -e "$dev" ] && OBD_DEVICE="--device $dev:$dev" && break
+done
 
-# ── Restart service ───────────────────────────────────────────────────────────
-log "Restarting service..."
-sudo systemctl restart mini_obd_api
-log "=== Update complete ($NEW) ==="
+docker run -d \
+    --name "$CONTAINER" \
+    --restart unless-stopped \
+    -p 8080:8080 \
+    $OBD_DEVICE \
+    -v "$HOME/mini_obd/data:/root/mini_obd/data" \
+    -v "$HOME/mini_obd/logs:/root/mini_obd/logs" \
+    -v "$HOME/mini_obd/config:/root/mini_obd/config" \
+    "$IMAGE" 2>&1 | tee -a "$LOG"
+
+log "=== Update complete ==="

@@ -1,282 +1,152 @@
 #!/bin/bash
 # ============================================================
-# Mini Cooper R56 N14 - RPi5 OBD Logger Setup Script
+# Mini Cooper R56 N14 - RPi5 Setup Script (Docker deployment)
 # Verified for: Raspberry Pi 5, Ubuntu 24.04 LTS (arm64)
-#               WD Black SN7100 2TB NVMe via USB-C
+#               WD Black SN7100 2TB NVMe via USB enclosure
 # Usage: chmod +x 01_rpi5_setup.sh && sudo ./01_rpi5_setup.sh
 # ============================================================
 
 set -e
 
 echo "================================================"
-echo " Mini R56 N14 OBD Logger - RPi5 Ubuntu Setup"
+echo " Mini R56 N14 OBD Logger - RPi5 Docker Setup"
 echo "================================================"
 
-# ── Detect actual username (not root) ───────────────────────
-# Ubuntu 24.04 on RPi5 uses the username you set in Imager
-# NOT "pi" like Raspberry Pi OS
 ACTUAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo ubuntu)}"
 USER_HOME="/home/${ACTUAL_USER}"
-echo "  Detected user: ${ACTUAL_USER}"
-echo "  Home dir:      ${USER_HOME}"
+IMAGE="ghcr.io/toddkimery/mini_obd_build:latest"
 
-# ── Verify we're on Ubuntu 24.04 arm64 ──────────────────────
+echo "  User: ${ACTUAL_USER}  Home: ${USER_HOME}"
+
+# ── Step 1: System update (minimal — avoid heavy write spikes) ─
 echo ""
-echo "[PRE-CHECK] Verifying system..."
-lsb_release -a 2>/dev/null || true
-uname -m  # Should print aarch64
-echo ""
+echo "[1/6] Updating system..."
+apt-get update -q
 
-# ── Step 1: System Update ────────────────────────────────────
-echo "[1/8] Updating system packages..."
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+# snapd causes apt upgrade failures on RPi5 (snap store unreachable)
+DEBIAN_FRONTEND=noninteractive apt-get remove --purge snapd -y 2>/dev/null || true
+rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd /root/snap 2>/dev/null || true
 
-# ── Step 2: Core Dependencies ────────────────────────────────
-echo "[2/8] Installing core dependencies..."
+# Upgrade only security-critical packages, not the full dist
+DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade \
+    openssl libssl3 libssl-dev 2>/dev/null || true
+
+# ── Step 2: Minimal dependencies ──────────────────────────────
+echo "[2/6] Installing dependencies..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    python3-pip \
-    python3-venv \
-    python3-dev \
-    python3-full \
     git \
-    sqlite3 \
-    screen \
+    curl \
+    ca-certificates \
+    gnupg \
     usbutils \
     can-utils \
-    bluetooth \
-    bluez \
-    libffi-dev \
-    libssl-dev \
-    libglib2.0-dev \
-    pkg-config \
-    build-essential \
     udev \
-    curl \
-    wget \
-    htop \
     nano \
+    htop \
     net-tools \
-    wireless-tools \
     network-manager \
-    nmtui \
-    cpufrequtils \
-    nodejs \
-    npm
+    cpufrequtils
 
-# ── NOTE: python3-bluez is NOT available on Ubuntu 24.04 ─────
-# It was replaced - bleak pip package handles BLE instead
-# DO NOT apt install python3-bluez on Ubuntu 24.04
+# ── Step 3: Install Docker ─────────────────────────────────────
+echo "[3/6] Installing Docker..."
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
 
-# ── Step 3: NVMe Storage Setup ───────────────────────────────
-echo "[3/8] Checking NVMe storage..."
-echo "  Block devices:"
-lsblk
-echo ""
-df -h
-echo ""
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+    | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# Create OBD data partition directory on NVMe
-# Ubuntu mounts NVMe root at / - all data goes under /home
-mkdir -p "${USER_HOME}/mini_obd/logs"
-mkdir -p "${USER_HOME}/mini_obd/data"
-mkdir -p "${USER_HOME}/mini_obd/models"
-mkdir -p "${USER_HOME}/mini_obd/config"
-mkdir -p "${USER_HOME}/mini_obd/scripts"
+apt-get update -q
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+systemctl enable docker
+systemctl start docker
+usermod -aG docker "${ACTUAL_USER}"
+echo "  ✓ Docker installed"
+
+# ── Step 4: Project directories + udev rules ──────────────────
+echo "[4/6] Creating project structure and udev rules..."
+mkdir -p "${USER_HOME}/mini_obd/logs" \
+         "${USER_HOME}/mini_obd/data" \
+         "${USER_HOME}/mini_obd/config"
 chown -R "${ACTUAL_USER}:${ACTUAL_USER}" "${USER_HOME}/mini_obd"
-echo "  Project structure created at ${USER_HOME}/mini_obd/"
 
-# ── Step 4: Python Virtual Environment ───────────────────────
-echo "[4/8] Creating Python virtual environment..."
-
-# Ubuntu 24.04 requires --system-site-packages OR explicit venv
-# Using isolated venv (recommended)
-sudo -u "${ACTUAL_USER}" python3 -m venv "${USER_HOME}/obd_env" \
-    --prompt "obd_env"
-
-# Activate for this script session
-source "${USER_HOME}/obd_env/bin/activate"
-
-# ── Step 5: Python Packages ───────────────────────────────────
-echo "[5/8] Installing Python packages..."
-pip install --upgrade pip setuptools wheel
-
-# OBD-II core
-pip install python-obd      # ELM327/K+DCAN OBD-II library
-pip install pyserial        # Serial port support for K+DCAN USB
-
-# CAN bus (future CANable 2.0 / SN65HVD230 expansion)
-pip install python-can
-pip install cantools
-
-# BLE (future Veepeak BLE expansion)
-# bleak replaces python-bluez on Ubuntu 24.04
-pip install bleak
-
-# Data logging & analysis
-pip install pandas
-pip install numpy
-pip install matplotlib
-pip install scikit-learn
-
-# Verify critical packages
-echo ""
-echo "  Verifying package installation..."
-python3 -c "
-import obd, serial, can, pandas, numpy, sklearn, bleak
-print('  ✓ All packages installed successfully')
-print(f'  ✓ python-obd version: {obd.__version__}')
-print(f'  ✓ pyserial version: {serial.__version__}')
-print(f'  ✓ pandas version: {pandas.__version__}')
-" || echo "  ⚠ Some packages may have issues - check output above"
-
-deactivate
-
-# Fix ownership of venv
-chown -R "${ACTUAL_USER}:${ACTUAL_USER}" "${USER_HOME}/obd_env"
-
-# ── Step 6: K+DCAN udev Rules ────────────────────────────────
-echo "[6/8] Configuring udev rules for K+DCAN..."
-
-# FT232RL vendor:product IDs
-# 0403:6001 = Standard FT232RL (most K+DCAN cables)
-# 0403:6010 = FT2232 (some variants)
+# K+DCAN FT232RL udev rules
 cat > /etc/udev/rules.d/99-mini-obd.rules << 'EOF'
-# K+DCAN FT232RL - maps to /dev/kdcan
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
     SYMLINK+="kdcan", MODE="0666", GROUP="dialout"
-
-# K+DCAN FT2232 variant
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6010", \
     SYMLINK+="kdcan", MODE="0666", GROUP="dialout"
-
-# CANable 2.0 Pro / SN65HVD230 (future expansion)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="117e", \
-    SYMLINK+="canable", MODE="0666", GROUP="dialout"
-
-# CANable USB alternative ID
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", \
-    SYMLINK+="canable", MODE="0666", GROUP="dialout"
 EOF
-
-udevadm control --reload-rules
-udevadm trigger
-
-# ── Step 7: Add user to dialout group ────────────────────────
-echo "[7/8] Adding ${ACTUAL_USER} to dialout group..."
-# dialout group = serial port access on Ubuntu (NOT pi group like RPi OS)
+udevadm control --reload-rules && udevadm trigger
 usermod -aG dialout "${ACTUAL_USER}"
-usermod -aG bluetooth "${ACTUAL_USER}"
-echo "  ✓ Added to dialout and bluetooth groups"
-echo "  ⚠ Logout/login required for group changes to take effect"
+echo "  ✓ udev rules installed"
 
-# ── Step 7b: Allow lola to set system time (phone → Pi sync) ─
-echo "[7b] Adding sudoers rule for clock sync..."
-SUDOERS_FILE="/etc/sudoers.d/mini-obd-time"
-cat > "${SUDOERS_FILE}" << EOF
-# Allow mini-obd service user to set system clock from phone
-${ACTUAL_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-time *
-${ACTUAL_USER} ALL=(ALL) NOPASSWD: /bin/date -s *
-EOF
-chmod 0440 "${SUDOERS_FILE}"
-echo "  ✓ ${ACTUAL_USER} can now set system time without a password"
+# ── Step 5: Pull image + create systemd service ───────────────
+echo "[5/6] Pulling Docker image from GHCR..."
+sudo -u "${ACTUAL_USER}" docker pull "${IMAGE}" || {
+    echo "  ⚠ Pull failed — image may be private. Run after logging in:"
+    echo "    docker login ghcr.io -u ToddKimery"
+    echo "    docker pull ${IMAGE}"
+}
 
-# ── Step 8: Performance & Boot Config ────────────────────────
-echo "[8/8] Optimising RPi5 for headless server use..."
-
-# Set CPU to performance mode (better for consistent logging)
-echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
-echo 'GOVERNOR="performance"' > /etc/default/cpufrequtils
-
-# Create systemd service (disabled until tested)
 cat > /etc/systemd/system/mini_obd.service << EOF
 [Unit]
-Description=Mini R56 N14 OBD Data Logger
-After=network.target
-# Wait for USB devices to be ready
-After=dev-kdcan.device
-Wants=dev-kdcan.device
+Description=Mini R56 N14 OBD Docker Container
+After=docker.service network-online.target
+Requires=docker.service
 
 [Service]
 Type=simple
 User=${ACTUAL_USER}
-WorkingDirectory=${USER_HOME}/mini_obd
-ExecStart=${USER_HOME}/obd_env/bin/python ${USER_HOME}/mini_obd/scripts/03_obd_logger.py
 Restart=on-failure
-RestartSec=30
-# Restart up to 5 times then give up
-StartLimitBurst=5
-StartLimitIntervalSec=300
+RestartSec=10
+ExecStartPre=-/usr/bin/docker stop mini-obd
+ExecStartPre=-/usr/bin/docker rm mini-obd
+ExecStart=/usr/bin/docker run --name mini-obd --rm \
+    -p 8080:8080 \
+    --device-cgroup-rule='c 188:* rmw' \
+    -v /dev:/dev \
+    -v ${USER_HOME}/mini_obd/data:/root/mini_obd/data \
+    -v ${USER_HOME}/mini_obd/logs:/root/mini_obd/logs \
+    -v ${USER_HOME}/mini_obd/config:/root/mini_obd/config \
+    ${IMAGE}
+ExecStop=/usr/bin/docker stop mini-obd
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-echo "  Service created (disabled - enable after testing)"
+systemctl enable mini_obd
+systemctl start mini_obd
+echo "  ✓ Service started"
 
-# ── Step 9: Git auto-update timer ────────────────────────────
-echo "[9/9] Setting up GitHub auto-update timer..."
-
-# Install systemd units for auto-update
+# ── Step 6: Auto-update timer ─────────────────────────────────
+echo "[6/6] Setting up auto-update timer..."
 cp "${USER_HOME}/mini_obd/scripts/mini_obd_update.service" /etc/systemd/system/
 cp "${USER_HOME}/mini_obd/scripts/mini_obd_update.timer"   /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable mini_obd_update.timer
 systemctl start  mini_obd_update.timer
-echo "  ✓ Auto-update timer enabled (runs 2 min after boot, then every 30 min)"
+echo "  ✓ Auto-update timer enabled"
 
-# Allow lola to restart the service from the update script
-SUDOERS_UPDATE="/etc/sudoers.d/mini-obd-update"
-if [ ! -f "${SUDOERS_UPDATE}" ]; then
-    echo "${ACTUAL_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart mini_obd_api" \
-        | tee "${SUDOERS_UPDATE}" > /dev/null
-    chmod 0440 "${SUDOERS_UPDATE}"
-    echo "  ✓ Sudoers rule for service restart added"
-fi
+# Sudoers for clock sync
+cat > /etc/sudoers.d/mini-obd-time << EOF
+${ACTUAL_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-time *
+${ACTUAL_USER} ALL=(ALL) NOPASSWD: /bin/date -s *
+EOF
+chmod 0440 /etc/sudoers.d/mini-obd-time
 
-# Generate SSH key for GitHub (if not already present)
-SSH_KEY="${USER_HOME}/.ssh/id_ed25519"
-if [ ! -f "${SSH_KEY}" ]; then
-    sudo -u "${ACTUAL_USER}" ssh-keygen -t ed25519 -C "mini-obd-pi" -N "" -f "${SSH_KEY}"
-    echo ""
-    echo "  ┌─────────────────────────────────────────────────────────┐"
-    echo "  │  Add this SSH public key to GitHub → Settings →         │"
-    echo "  │  SSH and GPG keys → New SSH key                         │"
-    echo "  └─────────────────────────────────────────────────────────┘"
-    cat "${SSH_KEY}.pub"
-    echo ""
-fi
-
-# Configure git repo remote (if GITHUB_REPO env var provided)
-if [ -n "${GITHUB_REPO}" ] && [ -d "${USER_HOME}/mini_obd" ]; then
-    cd "${USER_HOME}/mini_obd"
-    sudo -u "${ACTUAL_USER}" bash -c "
-        git init -q
-        git remote remove origin 2>/dev/null || true
-        git remote add origin ${GITHUB_REPO}
-        echo 'Remote set to ${GITHUB_REPO}'
-    "
-fi
-
-# ── Final Summary ─────────────────────────────────────────────
 echo ""
 echo "================================================"
 echo " Setup Complete!"
 echo "================================================"
 echo ""
-echo "  User         : ${ACTUAL_USER}"
-echo "  Project dir  : ${USER_HOME}/mini_obd/"
-echo "  Python env   : ${USER_HOME}/obd_env/"
-echo "  udev rules   : /etc/udev/rules.d/99-mini-obd.rules"
+echo "  App will be at: http://$(hostname -I | awk '{print $1}'):8080"
 echo ""
-echo "  IMPORTANT: Log out and back in for group"
-echo "  membership (dialout) to take effect"
-echo ""
-echo "  Next steps:"
-echo "  1. Log out and back in (group membership)"
-echo "  2. Add the SSH key printed above to GitHub → Settings → SSH keys"
-echo "  3. cd ~/mini_obd && git remote add origin git@github.com:YOU/REPO.git"
-echo "  4. bash ~/mini_obd/scripts/update.sh   (first pull + build)"
-echo "  5. Open app: http://192.168.4.1:8080"
+echo "  Next: plug in OBD adapter and open the app"
 echo ""
