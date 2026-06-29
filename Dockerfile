@@ -35,25 +35,18 @@ RUN /root/obd_env/bin/pip install --prefer-binary \
         matplotlib \
         scikit-learn
 
-# OBD + serial — pure Python, no C extensions
+# CAN + SocketCAN — pure Python, no C extensions
 RUN /root/obd_env/bin/pip install --prefer-binary \
-        pyserial \
         python-can \
-        cantools \
-        bleak
-
-# python-obd: try PyPI name first, fall back to 'obd' package name
-RUN /root/obd_env/bin/pip install --prefer-binary python-obd \
-    || /root/obd_env/bin/pip install --prefer-binary obd
+        cantools
 
 # ── Verify installs ───────────────────────────────────────────
 RUN /root/obd_env/bin/python3 -c "\
-import obd, serial, can, pandas, numpy, sklearn, bleak, matplotlib; \
+import can, pandas, numpy, sklearn, matplotlib; \
 print('All packages OK'); \
-print(f'  obd      {obd.__version__}'); \
-print(f'  pyserial {serial.__version__}'); \
-print(f'  pandas   {pandas.__version__}'); \
-print(f'  numpy    {numpy.__version__}'); \
+print(f'  python-can {can.__version__}'); \
+print(f'  pandas     {pandas.__version__}'); \
+print(f'  numpy      {numpy.__version__}'); \
 "
 
 # ── Project structure (mirrors 01_rpi5_setup.sh step 3) ──────

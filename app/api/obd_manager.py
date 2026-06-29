@@ -2,6 +2,8 @@
 OBD connection manager — runs the read loop in a background thread,
 puts each sample into an asyncio Queue for WebSocket broadcasting,
 and writes to SQLite (same schema as scripts/03_obd_logger.py).
+
+Uses python-can with SocketCAN (slcan0) for OBD2 over ISO 15765-4.
 """
 import asyncio
 import csv
@@ -15,12 +17,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-try:
-    import obd
-    OBD_AVAILABLE = True
-except ImportError:
-    OBD_AVAILABLE = False
-
 # ── Thresholds (must match 03_obd_logger.py) ─────────────────────────────────
 THRESHOLDS = {
     "maf_gs":       {"min": 0.5,  "max": 25.0},
@@ -29,21 +25,40 @@ THRESHOLDS = {
     "coolant_c":    {"min": 70,   "max": 115},
 }
 
-# ── PID map ───────────────────────────────────────────────────────────────────
-PID_MAP = {
-    "rpm":         obd.commands.RPM         if OBD_AVAILABLE else None,
-    "coolant_c":   obd.commands.COOLANT_TEMP if OBD_AVAILABLE else None,
-    "maf_gs":      obd.commands.MAF         if OBD_AVAILABLE else None,
-    "throttle_pct":obd.commands.THROTTLE_POS if OBD_AVAILABLE else None,
-    "map_kpa":     obd.commands.INTAKE_PRESSURE if OBD_AVAILABLE else None,
-    "iat_c":       obd.commands.INTAKE_TEMP if OBD_AVAILABLE else None,
-    "speed_kph":   obd.commands.SPEED       if OBD_AVAILABLE else None,
-    "stft_pct":    obd.commands.SHORT_FUEL_TRIM_1 if OBD_AVAILABLE else None,
-    "ltft_pct":    obd.commands.LONG_FUEL_TRIM_1  if OBD_AVAILABLE else None,
-    "timing_deg":  obd.commands.TIMING_ADVANCE    if OBD_AVAILABLE else None,
-    "o2_b1s1_v":   obd.commands.O2_B1S1    if OBD_AVAILABLE else None,
-    "o2_b1s2_v":   obd.commands.O2_B1S2    if OBD_AVAILABLE else None,
+# ── OBD2 Mode 01 PID table (ISO 15765-4) ─────────────────────────────────────
+# key -> (pid_byte, decoder(data_bytes_after_pid) -> float)
+CAN_PIDS: dict[str, tuple[int, ...]] = {
+    "rpm":           (0x0C,),
+    "coolant_c":     (0x05,),
+    "maf_gs":        (0x10,),
+    "throttle_pct":  (0x11,),
+    "map_kpa":       (0x0B,),
+    "iat_c":         (0x0F,),
+    "speed_kph":     (0x0D,),
+    "stft_pct":      (0x06,),
+    "ltft_pct":      (0x07,),
+    "timing_deg":    (0x0E,),
+    "o2_b1s1_v":     (0x14,),
+    "o2_b1s2_v":     (0x15,),
 }
+
+
+def _decode_pid(pid: int, data: bytes) -> Optional[float]:
+    """Decode OBD2 Mode 01 response bytes (starting after PID echo)."""
+    d = data
+    if pid == 0x0C: return (d[0] * 256 + d[1]) / 4        # RPM
+    if pid == 0x05: return d[0] - 40                        # coolant °C
+    if pid == 0x10: return (d[0] * 256 + d[1]) / 100       # MAF g/s
+    if pid == 0x11: return d[0] * 100 / 255                 # throttle %
+    if pid == 0x0B: return float(d[0])                      # MAP kPa
+    if pid == 0x0F: return d[0] - 40                        # IAT °C
+    if pid == 0x0D: return float(d[0])                      # speed km/h
+    if pid == 0x06: return (d[0] - 128) * 100 / 128        # STFT %
+    if pid == 0x07: return (d[0] - 128) * 100 / 128        # LTFT %
+    if pid == 0x0E: return d[0] / 2 - 64                   # timing advance °
+    if pid == 0x14: return d[0] / 200                       # O2 B1S1 V
+    if pid == 0x15: return d[0] / 200                       # O2 B1S2 V
+    return None
 
 DB_PATH = Path.home() / "mini_obd" / "data" / "mini_obd.db"
 CSV_DIR  = Path.home() / "mini_obd" / "data"
@@ -148,8 +163,6 @@ class OBDManager:
         if mock:
             self._thread = threading.Thread(target=self._mock_loop, daemon=True)
         else:
-            if not OBD_AVAILABLE:
-                return {"ok": False, "error": "obd module not installed"}
             self._thread = threading.Thread(target=self._log_loop, args=(port,), daemon=True)
         self._thread.start()
         return {"ok": True}
@@ -430,24 +443,26 @@ class OBDManager:
                     "session_id": self._session_id})
 
     def _log_loop(self, port: Optional[str]) -> None:
-        port = port or self._find_port()
-        if not port:
-            self._emit({"type": "error", "msg": "No OBD port found"})
+        try:
+            import can
+        except ImportError:
+            self._emit({"type": "error", "msg": "python-can not installed"})
             return
 
-        connection = obd.OBD(
-            portstr=port,
-            baudrate=38400,
-            fast=False,
-            timeout=10,
-        )
-        if not connection.is_connected():
-            self._emit({"type": "error", "msg": f"Could not connect on {port}"})
+        iface = self._find_can_interface()
+        if not iface:
+            self._emit({"type": "error", "msg": "No SocketCAN interface found (slcan0/can0). Is the adapter plugged in?"})
+            return
+
+        try:
+            bus = can.interface.Bus(channel=iface, interface="socketcan")
+        except Exception as e:
+            self._emit({"type": "error", "msg": f"CAN bus open failed on {iface}: {e}"})
             return
 
         self._connected = True
-        self._port = port
-        self._protocol = str(connection.protocol_name())
+        self._port = iface
+        self._protocol = "ISO 15765-4 CAN 500kbps"
         self._running = True
         self._start_time = time.monotonic()
         self._sample_count = 0
@@ -457,7 +472,7 @@ class OBDManager:
         _init_db(db)
         cur = db.execute(
             "INSERT INTO sessions (started_at, port, protocol) VALUES (?,?,?)",
-            (datetime.now().isoformat(), port, self._protocol),
+            (datetime.now().isoformat(), iface, self._protocol),
         )
         db.commit()
         self._session_id = cur.lastrowid
@@ -481,31 +496,20 @@ class OBDManager:
                 elapsed = round(time.monotonic() - self._start_time, 2)
                 row: dict = {"ts": ts, "elapsed_s": elapsed}
 
-                for key, cmd in PID_MAP.items():
-                    if cmd is None:
-                        continue
-                    resp = connection.query(cmd)
-                    if resp and not resp.is_null():
-                        try:
-                            row[key] = round(float(resp.value.magnitude), 3)
-                        except Exception:
-                            row[key] = None
-                    else:
-                        row[key] = None
+                for key, (pid,) in CAN_PIDS.items():
+                    val = self._query_pid(bus, pid)
+                    row[key] = round(val, 3) if val is not None else None
 
                 flag, reason = _detect_anomaly(row)
                 row["anomaly_flag"] = flag
                 row["anomaly_reason"] = reason
 
-                db.execute(f"""
+                db.execute("""
                     INSERT INTO readings (
-                        session_id, ts, elapsed_s,
-                        rpm, coolant_c, maf_gs, throttle_pct, map_kpa, iat_c,
-                        speed_kph, stft_pct, ltft_pct, timing_deg,
-                        o2_b1s1_v, o2_b1s2_v, anomaly_flag, anomaly_reason
-                    ) VALUES (
-                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-                    )
+                        session_id, ts, elapsed_s, rpm, coolant_c, maf_gs,
+                        throttle_pct, map_kpa, iat_c, speed_kph, stft_pct, ltft_pct,
+                        timing_deg, o2_b1s1_v, o2_b1s2_v, anomaly_flag, anomaly_reason
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     self._session_id, ts, elapsed,
                     row.get("rpm"), row.get("coolant_c"), row.get("maf_gs"),
@@ -526,7 +530,7 @@ class OBDManager:
                 time.sleep(1.0)
 
         finally:
-            connection.close()
+            bus.shutdown()
             csv_file.close()
             db.close()
             self._connected = False
@@ -538,13 +542,38 @@ class OBDManager:
                 "session_id": self._session_id,
             })
 
-    def _find_port(self) -> Optional[str]:
-        from pathlib import Path
-        kdcan = Path("/dev/kdcan")
-        if kdcan.exists():
-            return str(kdcan)
-        ports = obd.scan_serial()
-        return ports[0] if ports else None
+    def _query_pid(self, bus, pid: int) -> Optional[float]:
+        """Send OBD2 Mode 01 single-frame request, return decoded value or None."""
+        import can
+        req = can.Message(
+            arbitration_id=0x7DF,
+            data=[0x02, 0x01, pid, 0x00, 0x00, 0x00, 0x00, 0x00],
+            is_extended_id=False,
+        )
+        try:
+            bus.send(req)
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                msg = bus.recv(timeout=0.05)
+                if msg is None:
+                    continue
+                # ECU responses are 0x7E8–0x7EF
+                if 0x7E8 <= msg.arbitration_id <= 0x7EF:
+                    d = msg.data
+                    if len(d) >= 4 and d[1] == 0x41 and d[2] == pid:
+                        return _decode_pid(pid, d[3:])
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _find_can_interface() -> Optional[str]:
+        """Return the first live SocketCAN interface name."""
+        net = Path("/sys/class/net")
+        for name in ("slcan0", "can0", "slcan1", "can1"):
+            if (net / name).exists():
+                return name
+        return None
 
     def _emit(self, data: dict) -> None:
         if self._loop and not self._loop.is_closed():
