@@ -48,14 +48,19 @@ export function LoggerControl({ status, wsConnected }: LoggerControlProps) {
   return (
     <div className="flex flex-col items-end gap-1.5">
       <div className="flex items-center gap-3 flex-wrap justify-end">
-        {/* Connection indicator */}
-        <div className="flex items-center gap-1.5">
+        {/* Connection indicators */}
+        <div className="flex items-center gap-2 text-xs">
           <span className={cn(
-            "h-2 w-2 rounded-full",
-            wsConnected ? "bg-emerald-400 animate-pulse" : "bg-slate-600"
-          )} />
-          <span className="text-xs text-slate-400">
-            {wsConnected ? "Connected" : "Disconnected"}
+            "px-2 py-0.5 rounded font-medium",
+            wsConnected ? "bg-slate-700 text-slate-300" : "bg-slate-800 text-slate-500"
+          )}>
+            {wsConnected ? "Pi ✓" : "Pi ✗"}
+          </span>
+          <span className={cn(
+            "px-2 py-0.5 rounded font-medium",
+            status?.connected ? "bg-emerald-900 text-emerald-200 animate-pulse" : "bg-slate-800 text-slate-500"
+          )}>
+            {status?.connected ? "OBD ✓" : "OBD —"}
           </span>
         </div>
 
