@@ -156,9 +156,13 @@ class OBDManager:
 
     async def stop(self) -> dict:
         self._running = False
-        if self._thread:
-            self._thread.join(timeout=5)
         self._connected = False
+        self._emit({"type": "status", "connected": False, "logging": False,
+                    "session_id": self._session_id, "port": None, "protocol": None,
+                    "sample_count": self._sample_count, "elapsed_s": 0})
+        if self._thread:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._thread.join, 5)
         return {"ok": True, "session_id": self._session_id}
 
     def get_sessions(self) -> list[dict]:
