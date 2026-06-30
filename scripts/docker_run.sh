@@ -22,14 +22,8 @@ setup_can() {
 setup_can
 
 # ── Start container ───────────────────────────────────────────────────────────
-# obd_manager.py override: lets us update the file on Pi without rebuilding the image
-OBD_MGR_OVERRIDE=""
-[ -f /home/lola/mini_obd/config/obd_manager.py ] && \
-    OBD_MGR_OVERRIDE="-v /home/lola/mini_obd/config/obd_manager.py:/root/mini_obd/app/api/obd_manager.py:ro"
-
 exec docker run --name "$CONTAINER" \
     --network=host \
-    $OBD_MGR_OVERRIDE \
     -v /home/lola/mini_obd/data:/root/mini_obd/data \
     -v /home/lola/mini_obd/logs:/root/mini_obd/logs \
     -v /home/lola/mini_obd/config:/root/mini_obd/config \
