@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useOBDStream } from "@/hooks/useOBDStream";
-import { useSettings, toDisplayTemp } from "@/lib/settings";
+import { useSettings, toDisplayTemp, toDisplayPressure, toDisplaySpeed, tempLabel as getTempLabel } from "@/lib/settings";
 import { PIDCard } from "@/components/dashboard/PIDCard";
 import { LiveChart } from "@/components/dashboard/LiveChart";
 import { AnomalyBanner } from "@/components/dashboard/AnomalyBanner";
@@ -11,11 +11,13 @@ import { Separator } from "@/components/ui/separator";
 
 export default function DashboardPage() {
   const { connected, status, latest: r, history, anomalyReason } = useOBDStream();
-  const { tempUnit } = useSettings();
+  const { unitSystem } = useSettings();
 
   const [chartOpen, setChartOpen] = useState(false);
-  const tempLabel = `°${tempUnit}`;
-  const coolantNormal: [number, number] = tempUnit === "F" ? [158, 230] : [70, 110];
+  const tLabel = getTempLabel(unitSystem);
+  const coolantNormal: [number, number] = unitSystem === "imperial" ? [160, 235] : [71, 113];
+  const map = toDisplayPressure(r?.map_kpa, unitSystem);
+  const speed = toDisplaySpeed(r?.speed_kph, unitSystem);
 
   return (
     <div className="flex flex-col gap-4">
@@ -70,11 +72,11 @@ export default function DashboardPage() {
 
       {/* Secondary PIDs */}
       <div className="grid grid-cols-2 gap-3">
-        <PIDCard label="Coolant"  value={toDisplayTemp(r?.coolant_c, tempUnit)} unit={tempLabel} decimals={0} normalRange={coolantNormal} />
-        <PIDCard label="IAT"      value={toDisplayTemp(r?.iat_c, tempUnit)}      unit={tempLabel} decimals={0} />
-        <PIDCard label="MAP"      value={r?.map_kpa}      unit="kPa" decimals={0} />
-        <PIDCard label="Throttle" value={r?.throttle_pct} unit="%"   decimals={1} />
-        <PIDCard label="Speed"    value={r?.speed_kph}    unit="km/h" decimals={0} />
+        <PIDCard label="Coolant"  value={toDisplayTemp(r?.coolant_c, unitSystem)} unit={tLabel}     decimals={0} normalRange={coolantNormal} />
+        <PIDCard label="IAT"      value={toDisplayTemp(r?.iat_c, unitSystem)}     unit={tLabel}     decimals={0} />
+        <PIDCard label="MAP"      value={map.value}                               unit={map.unit}   decimals={1} />
+        <PIDCard label="Throttle" value={r?.throttle_pct}                         unit="%"          decimals={1} />
+        <PIDCard label="Speed"    value={speed.value}                             unit={speed.unit} decimals={0} />
         <PIDCard label="Timing"   value={r?.timing_deg}   unit="°"   decimals={1} />
         <PIDCard label="O2 B1S1"  value={r?.o2_b1s1_v}   unit="V"   decimals={3} />
         <PIDCard label="O2 B1S2"  value={r?.o2_b1s2_v}   unit="V"   decimals={3} />
