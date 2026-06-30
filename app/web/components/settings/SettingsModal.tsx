@@ -14,7 +14,7 @@ interface Props {
 type UpdatePhase = "idle" | "running" | "restarting" | "done";
 
 export function SettingsModal({ open, onClose }: Props) {
-  const { tempUnit, setTempUnit } = useSettings();
+  const { unitSystem, setUnitSystem } = useSettings();
 
   const [status, setStatus] = useState<APIKeyStatus | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -121,31 +121,34 @@ export function SettingsModal({ open, onClose }: Props) {
     <Modal open={open} onClose={onClose} title="Settings" className="max-w-sm">
       <div className="flex flex-col gap-6 px-1 pb-2">
 
-        {/* ── Temperature unit ── */}
+        {/* ── Unit system ── */}
         <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wide mb-3">Temperature Unit</p>
+          <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Unit System</p>
+          <p className="text-xs text-slate-600 mb-3">
+            Imperial: °F · mph · PSI/inHg &nbsp;|&nbsp; Metric: °C · km/h · kPa
+          </p>
           <div className="flex rounded-lg overflow-hidden border border-slate-700 w-fit">
             <button
-              onClick={() => setTempUnit("F")}
+              onClick={() => setUnitSystem("imperial")}
               className={cn(
                 "px-5 py-2 text-sm font-medium transition-colors",
-                tempUnit === "F"
+                unitSystem === "imperial"
                   ? "bg-emerald-700 text-white"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
               )}
             >
-              °F
+              Imperial
             </button>
             <button
-              onClick={() => setTempUnit("C")}
+              onClick={() => setUnitSystem("metric")}
               className={cn(
                 "px-5 py-2 text-sm font-medium transition-colors",
-                tempUnit === "C"
+                unitSystem === "metric"
                   ? "bg-emerald-700 text-white"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
               )}
             >
-              °C
+              Metric
             </button>
           </div>
         </div>

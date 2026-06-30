@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { API, type DiagnosticReport, type ReportFinding } from "@/lib/api";
 import { SessionCache } from "@/lib/sessionCache";
-import { useSettings } from "@/lib/settings";
+import { useSettings, tempLabel as getTempLabel } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
 function toF(c: number | null | undefined) {
@@ -13,7 +13,7 @@ function toF(c: number | null | undefined) {
 function fmtTemp(c: number | null | undefined, unit: string) {
   if (c == null) return "—";
   const val = unit === "°F" ? toF(c) : Math.round(c);
-  return `${val}${unit}`;
+  return `${val} ${unit}`;
 }
 
 function fmtDuration(s: number) {
@@ -51,8 +51,8 @@ export function DiagnosticReport({
   const [report, setReport] = useState<DiagnosticReport | null>(null);
   const [fromCache, setFromCache] = useState(false);
   const [loading, setLoading] = useState(true);
-  const { tempUnit } = useSettings();
-  const tLabel = `°${tempUnit}`;
+  const { unitSystem } = useSettings();
+  const tLabel = getTempLabel(unitSystem);
 
   useEffect(() => {
     if (piOffline) {

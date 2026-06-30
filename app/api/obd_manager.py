@@ -60,6 +60,57 @@ def _decode_pid(pid: int, data: bytes) -> Optional[float]:
     if pid == 0x15: return d[0] / 200                       # O2 B1S2 V
     return None
 
+DTC_DESCRIPTIONS: dict[str, str] = {
+    "P0011": "Camshaft position actuator open – Bank 1 Intake",
+    "P0012": "Camshaft position over-retarded – Bank 1 Intake",
+    "P0014": "Camshaft position over-advanced – Bank 1 Exhaust",
+    "P0016": "Crankshaft/camshaft correlation – Bank 1 Intake A",
+    "P0017": "Crankshaft/camshaft correlation – Bank 1 Exhaust A",
+    "P0100": "Mass air flow sensor circuit",
+    "P0101": "Mass air flow circuit range/performance",
+    "P0102": "Mass air flow circuit low input",
+    "P0103": "Mass air flow circuit high input",
+    "P0104": "Mass air flow circuit intermittent",
+    "P0110": "Intake air temperature sensor circuit",
+    "P0111": "Intake air temperature range/performance",
+    "P0112": "Intake air temperature sensor low",
+    "P0113": "Intake air temperature sensor high",
+    "P0115": "Engine coolant temperature sensor circuit",
+    "P0116": "Engine coolant temperature range/performance",
+    "P0117": "Engine coolant temperature sensor low",
+    "P0118": "Engine coolant temperature sensor high",
+    "P0120": "Throttle position sensor A circuit",
+    "P0121": "Throttle position sensor A range/performance",
+    "P0122": "Throttle position sensor A low",
+    "P0123": "Throttle position sensor A high",
+    "P0130": "O2 sensor circuit – Bank 1 Sensor 1",
+    "P0133": "O2 sensor slow response – Bank 1 Sensor 1",
+    "P0136": "O2 sensor circuit – Bank 1 Sensor 2",
+    "P0171": "Fuel system too lean – Bank 1",
+    "P0172": "Fuel system too rich – Bank 1",
+    "P0190": "Fuel rail pressure sensor circuit",
+    "P0191": "Fuel rail pressure sensor range/performance",
+    "P0192": "Fuel rail pressure sensor low",
+    "P0193": "Fuel rail pressure sensor high",
+    "P0234": "Turbocharger overboost condition",
+    "P0236": "Turbocharger boost sensor A range/performance",
+    "P0237": "Turbocharger boost sensor A low",
+    "P0238": "Turbocharger boost sensor A high",
+    "P0300": "Random/multiple cylinder misfire",
+    "P0301": "Cylinder 1 misfire",
+    "P0302": "Cylinder 2 misfire",
+    "P0303": "Cylinder 3 misfire",
+    "P0304": "Cylinder 4 misfire",
+    "P0340": "Camshaft position sensor circuit – Bank 1",
+    "P0341": "Camshaft position sensor range/performance",
+    "P0420": "Catalyst efficiency below threshold – Bank 1",
+    "P0441": "EVAP system incorrect purge flow",
+    "P0442": "EVAP system small leak",
+    "P0455": "EVAP system large leak",
+    "P0456": "EVAP system very small leak",
+    "P2B5F": "Mass air flow plausibility low (BMW/MINI)",
+}
+
 DB_PATH = Path.home() / "mini_obd" / "data" / "mini_obd.db"
 CSV_DIR  = Path.home() / "mini_obd" / "data"
 
@@ -574,6 +625,164 @@ class OBDManager:
             if (net / name).exists():
                 return name
         return None
+
+    @staticmethod
+    def _decode_dtc(high: int, low: int) -> str:
+        system = ("P", "C", "B", "U")[(high >> 6) & 0x03]
+        d1 = (high >> 4) & 0x03
+        d2 = high & 0x0F
+        d3 = (low >> 4) & 0x0F
+        d4 = low & 0x0F
+        return f"{system}{d1}{d2:X}{d3:X}{d4:X}"
+
+    def _read_dtc_mode(self, bus, mode: int) -> list[str]:
+        """Read DTCs for one OBD2 service mode (0x03, 0x07, or 0x0A)."""
+        import can
+        response_mode = mode + 0x40
+        try:
+            bus.send(can.Message(
+                arbitration_id=0x7DF,
+                data=[0x01, mode, 0, 0, 0, 0, 0, 0],
+                is_extended_id=False,
+            ))
+        except Exception:
+            return []
+
+        payload: Optional[bytearray] = None
+        deadline = time.monotonic() + 2.0
+
+        while time.monotonic() < deadline:
+            msg = bus.recv(timeout=0.15)
+            if msg is None:
+                continue
+            if not (0x7E8 <= msg.arbitration_id <= 0x7EF):
+                continue
+            d = msg.data
+            pci = d[0] & 0xF0
+
+            if pci == 0x00:  # Single frame
+                data_len = d[0] & 0x0F
+                if data_len < 2 or d[1] != response_mode:
+                    continue
+                payload = bytearray(d[2:1 + data_len])
+                break
+
+            elif pci == 0x10:  # First frame — multi-frame response
+                total_len = ((d[0] & 0x0F) << 8) | d[1]
+                if d[2] != response_mode:
+                    continue
+                ecu_id = msg.arbitration_id - 8  # 0x7E8 -> 0x7E0
+                payload = bytearray(d[3:8])       # 5 bytes after service ID
+                remaining = total_len - 1 - 5     # subtract service ID + first 5 bytes
+
+                try:
+                    bus.send(can.Message(
+                        arbitration_id=ecu_id,
+                        data=[0x30, 0, 0, 0, 0, 0, 0, 0],
+                        is_extended_id=False,
+                    ))
+                except Exception:
+                    break
+
+                seq = 1
+                cf_deadline = time.monotonic() + 2.0
+                while remaining > 0 and time.monotonic() < cf_deadline:
+                    cf = bus.recv(timeout=0.2)
+                    if cf is None:
+                        continue
+                    if not (0x7E8 <= cf.arbitration_id <= 0x7EF):
+                        continue
+                    if (cf.data[0] & 0xF0) != 0x20:
+                        continue
+                    if (cf.data[0] & 0x0F) != (seq % 16):
+                        break
+                    take = min(7, remaining)
+                    payload.extend(cf.data[1:1 + take])
+                    remaining -= take
+                    seq += 1
+                break
+
+        if not payload:
+            return []
+
+        num_dtcs = payload[0]
+        dtcs: list[str] = []
+        for i in range(num_dtcs):
+            off = 1 + i * 2
+            if off + 1 >= len(payload):
+                break
+            h, lo = payload[off], payload[off + 1]
+            if h == 0 and lo == 0:
+                continue
+            dtcs.append(self._decode_dtc(h, lo))
+        return dtcs
+
+    def read_dtcs(self) -> dict:
+        try:
+            import can
+        except ImportError:
+            return {"error": "python-can not installed"}
+
+        iface = self._find_can_interface()
+        if not iface:
+            return {"error": "No CAN interface — adapter not connected"}
+
+        try:
+            bus = can.interface.Bus(channel=iface, interface="socketcan")
+        except Exception as e:
+            return {"error": f"CAN open failed: {e}"}
+
+        try:
+            current   = self._read_dtc_mode(bus, 0x03)
+            time.sleep(0.15)
+            pending   = self._read_dtc_mode(bus, 0x07)
+            time.sleep(0.15)
+            permanent = self._read_dtc_mode(bus, 0x0A)
+
+            def annotate(codes: list[str]) -> list[dict]:
+                return [{"code": c, "description": DTC_DESCRIPTIONS.get(c, "Unknown code")} for c in codes]
+
+            return {
+                "current":   annotate(current),
+                "pending":   annotate(pending),
+                "permanent": annotate(permanent),
+            }
+        finally:
+            bus.shutdown()
+
+    def clear_dtcs(self) -> dict:
+        try:
+            import can
+        except ImportError:
+            return {"ok": False, "error": "python-can not installed"}
+
+        iface = self._find_can_interface()
+        if not iface:
+            return {"ok": False, "error": "No CAN interface — adapter not connected"}
+
+        try:
+            bus = can.interface.Bus(channel=iface, interface="socketcan")
+        except Exception as e:
+            return {"ok": False, "error": f"CAN open failed: {e}"}
+
+        try:
+            bus.send(can.Message(
+                arbitration_id=0x7DF,
+                data=[0x01, 0x04, 0, 0, 0, 0, 0, 0],
+                is_extended_id=False,
+            ))
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                msg = bus.recv(timeout=0.2)
+                if msg is None:
+                    continue
+                if 0x7E8 <= msg.arbitration_id <= 0x7EF and (msg.data[1] == 0x44):
+                    return {"ok": True}
+            return {"ok": False, "error": "No clear confirmation from ECU"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            bus.shutdown()
 
     def _emit(self, data: dict) -> None:
         if self._loop and not self._loop.is_closed():

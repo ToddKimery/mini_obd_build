@@ -306,6 +306,22 @@ async def get_update_log(lines: int = 60) -> dict:
     return {"lines": [l.rstrip() for l in all_lines[-lines:]]}
 
 
+@app.get("/api/dtc")
+async def get_dtcs() -> dict:
+    result = await asyncio.get_running_loop().run_in_executor(None, obd_mgr.read_dtcs)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+    return result
+
+
+@app.post("/api/dtc/clear")
+async def clear_dtcs() -> dict:
+    result = await asyncio.get_running_loop().run_in_executor(None, obd_mgr.clear_dtcs)
+    if not result.get("ok"):
+        raise HTTPException(status_code=503, detail=result.get("error", "Clear failed"))
+    return result
+
+
 @app.get("/api/sessions/{session_id}/plot")
 async def get_plot(session_id: int) -> Response:
     png = obd_mgr.get_or_generate_plot(session_id)

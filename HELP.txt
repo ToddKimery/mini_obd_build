@@ -1,0 +1,1114 @@
+Below is a Linux-focused troubleshooting guide for the **DSD TECH SH-C31G USB-CAN / CAN FD adapter**. I am basing the SH-C31G-specific hardware notes on the uploaded SH-C31G/Canable 2.0 document, which shows that the SH-C31G is based on the **Canable 2.0**, supports **CAN FD**, is **isolated**, uses **USB Type-B**, has screw-terminal pins for **5V0, GND, CAN-H, CAN-L**, has **PWR/TXD/RXD LEDs**, a **BOOT switch**, and an **R120 termination switch**. 
+
+# SH-C31G Linux Troubleshooting Guide
+
+## 1. Know which firmware mode you are using
+
+The SH-C31G can behave differently depending on firmware.
+
+### Common firmware types
+
+| Firmware                          |   Linux interface type | Typical device name              | Best for                                         |
+| --------------------------------- | ---------------------: | -------------------------------- | ------------------------------------------------ |
+| **SLCAN firmware**                |        Serial-Line CAN | `/dev/ttyACM0` or `/dev/ttyUSB0` | Simple setup, can-utils, python-can              |
+| **Candlelight / gs_usb firmware** |       Native SocketCAN | `can0` directly                  | Better Linux integration, CAN FD, lower overhead |
+| **DFU mode**                      | Firmware flashing mode | STM32 DFU device                 | Reflashing or recovering firmware                |
+
+The uploaded SH-C31G doc shows the **BOOT switch** controls mode: **BOOT ON = DFU mode**, **BOOT OFF = Work mode**. It also shows the Canable 2.0 updater and firmware options such as SLCAN with FD support and Candlelight. 
+
+For normal use, the BOOT switch should be:
+
+```text
+BOOT switch: OFF / Work Mode
+```
+
+For firmware flashing:
+
+```text
+BOOT switch: ON / DFU Mode
+```
+
+---
+
+## 2. Install Linux tools
+
+On Debian, Ubuntu, Raspberry Pi OS, Linux Mint, etc.:
+
+```bash
+sudo apt update
+sudo apt install can-utils iproute2 python3-can python3-pip
+```
+
+Optional but useful:
+
+```bash
+sudo apt install minicom picocom usbutils
+```
+
+Check that CAN kernel modules are available:
+
+```bash
+lsmod | grep can
+```
+
+You may see modules such as:
+
+```text
+can
+can_raw
+slcan
+gs_usb
+```
+
+If needed:
+
+```bash
+sudo modprobe can
+sudo modprobe can_raw
+sudo modprobe slcan
+sudo modprobe gs_usb
+```
+
+---
+
+## 3. Plug in the SH-C31G and identify it
+
+Run this before plugging it in:
+
+```bash
+dmesg -w
+```
+
+Then plug in the SH-C31G.
+
+You are looking for one of two general outcomes.
+
+### If it appears as serial/SLCAN
+
+You may see something like:
+
+```text
+ttyACM0
+ttyUSB0
+```
+
+Check with:
+
+```bash
+ls -l /dev/ttyACM*
+ls -l /dev/ttyUSB*
+```
+
+Also:
+
+```bash
+lsusb
+```
+
+### If it appears as native SocketCAN / Candlelight
+
+You may see `can0` appear after the kernel loads `gs_usb`.
+
+Check:
+
+```bash
+ip link show
+```
+
+You may see:
+
+```text
+can0: <NOARP,ECHO> mtu 72 ...
+```
+
+If the adapter is in Candlelight/gs_usb mode, you generally **do not use `slcand`**.
+
+---
+
+# 4. Hardware wiring
+
+The SH-C31G terminal block is labeled:
+
+```text
+5V0
+GND
+CAN-H
+CAN-L
+```
+
+The uploaded diagram on page 3 shows those pins, plus the **PWR LED**, **TXD LED**, **RXD LED**, **BOOT switch**, and **R120 switch**. 
+
+## Basic CAN wiring
+
+For a normal CAN bus connection:
+
+```text
+SH-C31G CAN-H  ->  vehicle/device CAN-H
+SH-C31G CAN-L  ->  vehicle/device CAN-L
+SH-C31G GND    ->  signal ground, if required
+```
+
+Do **not** randomly connect `5V0` to a vehicle OBD port or powered bus. For most vehicle diagnostics, you only need:
+
+```text
+CAN-H
+CAN-L
+GND if needed
+```
+
+## OBD-II common CAN pins
+
+For most modern vehicles using high-speed CAN:
+
+```text
+OBD pin 6  = CAN-H
+OBD pin 14 = CAN-L
+OBD pin 4/5 = ground
+OBD pin 16 = battery power, usually not needed by SH-C31G if USB powered
+```
+
+---
+
+# 5. Termination: the R120 switch
+
+The SH-C31G has an **R120 switch** for built-in 120 Ω termination. The uploaded document identifies the R120 switch on the adapter. 
+
+## When to turn R120 ON
+
+Turn **R120 ON** when you are making a small bench bus and the SH-C31G is one physical end of the bus.
+
+Example:
+
+```text
+SH-C31G  ----  second CAN adapter/device
+ 120Ω              120Ω
+```
+
+With power off, measure resistance between CAN-H and CAN-L:
+
+```text
+~60 Ω   = good, two 120 Ω terminators in parallel
+~120 Ω  = only one terminator
+Open/high = no terminator
+Very low = short or wiring fault
+```
+
+## When to turn R120 OFF
+
+Turn **R120 OFF** when connecting to an existing vehicle CAN bus or machine bus that is already terminated.
+
+Most vehicle CAN buses are already terminated internally. Adding extra termination can load the bus down.
+
+---
+
+# 6. SLCAN setup on Linux
+
+Use this section if the SH-C31G appears as `/dev/ttyACM0` or `/dev/ttyUSB0`.
+
+## Clean start
+
+```bash
+sudo killall slcand 2>/dev/null
+sudo ip link set can0 down 2>/dev/null
+sudo ip link delete can0 2>/dev/null
+```
+
+## Start at 500 kbit/s
+
+For common high-speed OBD CAN:
+
+```bash
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+sudo ip link set can0 txqueuelen 1000
+```
+
+If your adapter appears as `/dev/ttyUSB0`, use:
+
+```bash
+sudo slcand -o -c -s6 /dev/ttyUSB0 can0
+sudo ip link set can0 up
+sudo ip link set can0 txqueuelen 1000
+```
+
+## SLCAN speed codes
+
+Common `slcand` speed codes:
+
+```text
+-s0 = 10 kbit/s
+-s1 = 20 kbit/s
+-s2 = 50 kbit/s
+-s3 = 100 kbit/s
+-s4 = 125 kbit/s
+-s5 = 250 kbit/s
+-s6 = 500 kbit/s
+-s7 = 800 kbit/s
+-s8 = 1 Mbit/s
+```
+
+For most OBD high-speed CAN, use:
+
+```bash
+-s6
+```
+
+Do **not** use `-s0` if you are trying to talk to a 500 kbit/s vehicle CAN bus.
+
+---
+
+# 7. Candlelight / gs_usb setup on Linux
+
+Use this section if the SH-C31G appears directly as a native CAN interface, such as `can0`, without `slcand`.
+
+Check:
+
+```bash
+ip link show
+```
+
+Bring it down first:
+
+```bash
+sudo ip link set can0 down
+```
+
+Set 500 kbit/s classic CAN:
+
+```bash
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set can0 up
+```
+
+Check status:
+
+```bash
+ip -details -statistics link show can0
+```
+
+For CAN FD, example:
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000 dbitrate 2000000 fd on
+sudo ip link set can0 up
+```
+
+Then confirm:
+
+```bash
+ip -details link show can0
+```
+
+You should see `fd on` if CAN FD mode is enabled.
+
+---
+
+# 8. Confirm basic interface status
+
+Run:
+
+```bash
+ip -details -statistics link show can0
+```
+
+Healthy output may show:
+
+```text
+can state ERROR-ACTIVE
+RX: bytes packets errors dropped missed mcast
+TX: bytes packets errors dropped carrier collsns
+```
+
+Important states:
+
+| State           | Meaning                                   |
+| --------------- | ----------------------------------------- |
+| `ERROR-ACTIVE`  | Normal CAN state                          |
+| `ERROR-WARNING` | Bus errors are accumulating               |
+| `ERROR-PASSIVE` | Serious communication problem             |
+| `BUS-OFF`       | Interface stopped due to excessive errors |
+
+For SLCAN adapters, seeing this is common:
+
+```text
+bitrate 0
+```
+
+That does **not always mean the bitrate is actually zero**. With SLCAN, the bitrate is set inside the adapter by `slcand` using `-s6`, `-s5`, etc., and Linux may not display it like a native SocketCAN adapter.
+
+---
+
+# 9. Listen for CAN traffic
+
+Open a terminal:
+
+```bash
+candump -L can0
+```
+
+If connected to an active vehicle bus with ignition on, you may see frames like:
+
+```text
+(1720000000.123456) can0 123#11223344
+```
+
+If you see nothing, check:
+
+```bash
+ip -details -statistics link show can0
+```
+
+Look at whether `RX packets` increases.
+
+---
+
+# 10. Send a test frame
+
+Do this only on a bench bus or when you understand the risk of sending frames to a vehicle network.
+
+```bash
+cansend can0 123#11223344
+```
+
+Check stats:
+
+```bash
+ip -details -statistics link show can0
+```
+
+If the TX packet count increases, Linux is at least sending frames to the adapter.
+
+Example:
+
+```text
+TX: bytes packets
+     8       1
+```
+
+That means one 8-byte CAN frame was transmitted or queued.
+
+---
+
+# 11. OBD-II test request
+
+For many vehicles, a basic engine RPM request is:
+
+```bash
+cansend can0 7DF#02010C0000000000
+```
+
+Watch with:
+
+```bash
+candump -L can0
+```
+
+A typical response may come from:
+
+```text
+7E8
+7E9
+7EA
+```
+
+Example response pattern:
+
+```text
+7E8#04410C1A2B000000
+```
+
+Other simple OBD requests:
+
+```bash
+# Engine coolant temperature
+cansend can0 7DF#0201050000000000
+
+# Vehicle speed
+cansend can0 7DF#02010D0000000000
+
+# Supported PIDs 01-20
+cansend can0 7DF#0201000000000000
+```
+
+If TX increases but RX stays at zero, do not immediately declare the adapter dead. First confirm bitrate, wiring, ignition state, and termination.
+
+---
+
+# 12. Interpreting TX/RX LEDs
+
+The SH-C31G has separate **TXD** and **RXD** LEDs according to the uploaded diagram. 
+
+| LED behavior                       | Likely meaning                                               |
+| ---------------------------------- | ------------------------------------------------------------ |
+| PWR on                             | USB power is present                                         |
+| TXD blinks when using `cansend`    | Adapter is attempting to transmit                            |
+| RXD blinks when bus traffic exists | Adapter is receiving CAN frames                              |
+| TXD blinks but RXD never blinks    | Possible wiring, bitrate, no bus traffic, or damaged RX path |
+| No PWR LED                         | USB/cable/port/device issue                                  |
+
+---
+
+# 13. Best bench test with two CAN adapters
+
+This is the cleanest way to prove whether the SH-C31G works.
+
+## Hardware
+
+Use:
+
+```text
+SH-C31G
+Known-good USB-CAN adapter
+Short twisted pair wire
+Proper termination
+```
+
+Wire:
+
+```text
+SH-C31G CAN-H  ->  good adapter CAN-H
+SH-C31G CAN-L  ->  good adapter CAN-L
+SH-C31G GND    ->  good adapter GND, optional but helpful
+```
+
+With power off, measure CAN-H to CAN-L:
+
+```text
+~60 Ω = correct with two 120 Ω terminators
+```
+
+## Linux setup
+
+Assume:
+
+```text
+SH-C31G = can0
+Known-good adapter = can1
+```
+
+Start both at 500 kbit/s.
+
+For SLCAN SH-C31G:
+
+```bash
+sudo killall slcand 2>/dev/null
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+```
+
+For native SocketCAN second adapter:
+
+```bash
+sudo ip link set can1 down
+sudo ip link set can1 type can bitrate 500000
+sudo ip link set can1 up
+```
+
+## Test SH-C31G transmit
+
+Terminal 1:
+
+```bash
+candump -L can1
+```
+
+Terminal 2:
+
+```bash
+cansend can0 123#11223344
+```
+
+If `can1` sees the frame, the SH-C31G transmit path works.
+
+## Test SH-C31G receive
+
+Terminal 1:
+
+```bash
+candump -L can0
+```
+
+Terminal 2:
+
+```bash
+cansend can1 456#AABBCCDD
+```
+
+If `can1` can receive from the SH-C31G, but `can0` never receives from `can1`, suspect the SH-C31G RX path.
+
+---
+
+# 14. Confirming a dead RX path
+
+Do not diagnose “dead RX” from a single `RX packets 0` reading.
+
+A strong dead-RX diagnosis requires this pattern:
+
+```text
+1. Bitrate confirmed correct.
+2. CAN-H and CAN-L wiring confirmed.
+3. Termination confirmed.
+4. Known-good adapter sees bus traffic.
+5. SH-C31G TXD LED blinks when sending.
+6. Known-good adapter receives frames sent by SH-C31G.
+7. SH-C31G RXD LED never blinks when another device transmits.
+8. candump can0 shows nothing.
+9. RX packets stay at 0.
+10. TX packets increase normally.
+```
+
+Use this command before and after the test:
+
+```bash
+ip -details -statistics link show can0
+```
+
+Example suspicious output:
+
+```text
+RX: bytes packets errors dropped missed mcast
+     0       0      0       0       0      0
+
+TX: bytes packets errors dropped carrier collsns
+     8       1      0       0       0      0
+```
+
+That output means Linux has transmitted at least one frame but has received nothing. It is suspicious only if you already proved that valid traffic is present on the bus.
+
+---
+
+# 15. Common failure cases
+
+## Problem: `ip link show` does not show `can0`
+
+### For SLCAN firmware
+
+That is normal until you run `slcand`.
+
+Check device:
+
+```bash
+ls -l /dev/ttyACM*
+ls -l /dev/ttyUSB*
+```
+
+Start:
+
+```bash
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+```
+
+### For Candlelight firmware
+
+Load driver:
+
+```bash
+sudo modprobe gs_usb
+```
+
+Unplug and replug.
+
+Check:
+
+```bash
+dmesg | tail -50
+ip link show
+```
+
+---
+
+## Problem: `slcand` says device busy
+
+Kill old processes:
+
+```bash
+sudo killall slcand
+```
+
+Check who is using the port:
+
+```bash
+sudo lsof /dev/ttyACM0
+```
+
+Then restart:
+
+```bash
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+```
+
+---
+
+## Problem: permission denied on `/dev/ttyACM0`
+
+Try with `sudo`.
+
+For normal user access, add yourself to the dialout group:
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+Log out and back in.
+
+Check:
+
+```bash
+groups
+```
+
+---
+
+## Problem: `RTNETLINK answers: File exists`
+
+Delete the old CAN interface:
+
+```bash
+sudo ip link set can0 down 2>/dev/null
+sudo ip link delete can0 2>/dev/null
+sudo killall slcand 2>/dev/null
+```
+
+Then recreate it.
+
+---
+
+## Problem: `candump` shows nothing
+
+Check in this order:
+
+```text
+1. Is the adapter in Work Mode, not DFU Mode?
+2. Is the correct firmware being used?
+3. Is the correct device path used? /dev/ttyACM0 vs /dev/ttyUSB0
+4. Is the bitrate correct?
+5. Are CAN-H and CAN-L reversed?
+6. Is the bus actually active?
+7. Is vehicle ignition on?
+8. Is termination correct?
+9. Is another tool already using the adapter?
+10. Does the RXD LED blink?
+```
+
+Try 500 kbit/s:
+
+```bash
+sudo killall slcand 2>/dev/null
+sudo ip link delete can0 2>/dev/null
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+candump -L can0
+```
+
+Try 250 kbit/s:
+
+```bash
+sudo killall slcand 2>/dev/null
+sudo ip link delete can0 2>/dev/null
+sudo slcand -o -c -s5 /dev/ttyACM0 can0
+sudo ip link set can0 up
+candump -L can0
+```
+
+---
+
+## Problem: bus errors increase
+
+Check:
+
+```bash
+ip -details -statistics link show can0
+```
+
+If `bus-errors`, `error-warn`, or `error-pass` increase, likely causes are:
+
+```text
+Wrong bitrate
+CAN-H/CAN-L reversed
+Bad ground reference
+Bad termination
+Connected to wrong vehicle pins
+Bad adapter
+No other node acknowledging frames
+```
+
+For a bench test, make sure another node is present. CAN normally expects another node to acknowledge frames.
+
+---
+
+## Problem: bus-off
+
+Bring the interface down and back up.
+
+For native SocketCAN:
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000 restart-ms 100
+sudo ip link set can0 up
+```
+
+For SLCAN:
+
+```bash
+sudo ip link set can0 down
+sudo killall slcand
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+```
+
+---
+
+# 16. Python-can test
+
+Install:
+
+```bash
+pip3 install python-can
+```
+
+## SLCAN firmware example
+
+```python
+import can
+
+bus = can.interface.Bus(
+    bustype="slcan",
+    channel="/dev/ttyACM0",
+    bitrate=500000
+)
+
+msg = can.Message(
+    arbitration_id=0x123,
+    data=[0x11, 0x22, 0x33, 0x44],
+    is_extended_id=False
+)
+
+try:
+    bus.send(msg)
+    print(f"Message sent on {bus.channel_info}")
+except can.CanError:
+    print("Message NOT sent")
+```
+
+## SocketCAN / Candlelight example
+
+```python
+import can
+
+bus = can.interface.Bus(
+    bustype="socketcan",
+    channel="can0",
+    bitrate=500000
+)
+
+msg = can.Message(
+    arbitration_id=0x123,
+    data=[0x11, 0x22, 0x33, 0x44],
+    is_extended_id=False
+)
+
+try:
+    bus.send(msg)
+    print(f"Message sent on {bus.channel_info}")
+except can.CanError:
+    print("Message NOT sent")
+```
+
+## Receive test
+
+```python
+import can
+
+bus = can.interface.Bus(
+    bustype="socketcan",
+    channel="can0"
+)
+
+print("Waiting for CAN frames...")
+
+while True:
+    msg = bus.recv(timeout=5)
+    if msg is None:
+        print("No message received in 5 seconds")
+    else:
+        print(msg)
+```
+
+For SLCAN direct through python-can:
+
+```python
+import can
+
+bus = can.interface.Bus(
+    bustype="slcan",
+    channel="/dev/ttyACM0",
+    bitrate=500000
+)
+
+print("Waiting for CAN frames...")
+
+while True:
+    msg = bus.recv(timeout=5)
+    if msg is None:
+        print("No message received in 5 seconds")
+    else:
+        print(msg)
+```
+
+---
+
+# 17. CAN FD notes
+
+The SH-C31G is shown in the uploaded comparison chart as supporting **CAN FD** and being based on **Canable 2.0**. 
+
+For Linux CAN FD use, Candlelight/gs_usb firmware is usually the cleaner option.
+
+Example CAN FD setup:
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000 dbitrate 2000000 fd on
+sudo ip link set can0 up
+```
+
+Send a CAN FD frame with can-utils:
+
+```bash
+cansend can0 123##11122334455667788
+```
+
+CAN FD format uses `##` instead of `#`.
+
+Classic CAN:
+
+```bash
+cansend can0 123#11223344
+```
+
+CAN FD:
+
+```bash
+cansend can0 123##11122334455667788
+```
+
+If CAN FD commands fail, check:
+
+```text
+1. Is the adapter running CAN FD-capable firmware?
+2. Is the Linux interface native SocketCAN/gs_usb?
+3. Is `fd on` visible in `ip -details link show can0`?
+4. Does the other CAN node support CAN FD?
+5. Are arbitration bitrate and data bitrate correct?
+```
+
+---
+
+# 18. Firmware recovery / reflashing checklist
+
+Use this if the adapter stopped appearing correctly or you need to switch between SLCAN and Candlelight.
+
+The uploaded guide shows that the Canable 2.0 updater can be used and that the SH-C31G is based on Canable 2.0. It also shows BOOT switch ON for DFU mode and OFF for Work mode. 
+
+## General process
+
+```text
+1. Unplug SH-C31G.
+2. Set BOOT switch ON.
+3. Plug SH-C31G into USB.
+4. Confirm Linux sees a DFU/STM32 device.
+5. Flash desired firmware.
+6. Unplug SH-C31G.
+7. Set BOOT switch OFF.
+8. Plug back in.
+9. Confirm normal Work Mode.
+```
+
+Check USB:
+
+```bash
+lsusb
+dmesg | tail -50
+```
+
+If using web-based updater, use a browser that supports WebUSB/WebDFU well.
+
+---
+
+# 19. Quick command cheat sheet
+
+## SLCAN at 500 kbit/s
+
+```bash
+sudo killall slcand 2>/dev/null
+sudo ip link delete can0 2>/dev/null
+
+sudo slcand -o -c -s6 /dev/ttyACM0 can0
+sudo ip link set can0 up
+sudo ip link set can0 txqueuelen 1000
+
+ip -details -statistics link show can0
+candump -L can0
+```
+
+## SLCAN at 250 kbit/s
+
+```bash
+sudo killall slcand 2>/dev/null
+sudo ip link delete can0 2>/dev/null
+
+sudo slcand -o -c -s5 /dev/ttyACM0 can0
+sudo ip link set can0 up
+
+candump -L can0
+```
+
+## Native SocketCAN at 500 kbit/s
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set can0 up
+
+candump -L can0
+```
+
+## Native SocketCAN CAN FD
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000 dbitrate 2000000 fd on
+sudo ip link set can0 up
+
+candump -L can0
+```
+
+## Send classic CAN frame
+
+```bash
+cansend can0 123#11223344
+```
+
+## Send OBD RPM request
+
+```bash
+cansend can0 7DF#02010C0000000000
+```
+
+## Show bus load
+
+```bash
+canbusload can0 500000
+```
+
+## Sniff changing bytes
+
+```bash
+cansniffer can0
+```
+
+## Generate traffic on a bench bus
+
+```bash
+cangen can0 -D 11223344DEADBEEF -L 8
+```
+
+---
+
+# 20. Decision tree
+
+## Adapter does not appear
+
+```text
+Check USB cable
+Check BOOT switch
+Check dmesg
+Check lsusb
+Try another USB port
+Try another computer
+Try DFU mode
+Reflash firmware
+```
+
+## Adapter appears as `/dev/ttyACM0`
+
+```text
+Use slcand
+Use correct -s speed
+Bring can0 up
+Run candump
+Check RX/TX stats
+```
+
+## Adapter appears directly as `can0`
+
+```text
+Do not use slcand
+Use ip link set can0 type can bitrate ...
+Bring can0 up
+Run candump
+```
+
+## TX works but RX is zero
+
+```text
+Confirm bitrate
+Confirm CAN-H/CAN-L
+Confirm bus has traffic
+Confirm termination
+Try second adapter
+Watch RXD LED
+Compare RX/TX counters
+```
+
+## RX works but OBD request gets no reply
+
+```text
+Wrong bitrate
+Wrong CAN pins
+Ignition not on
+Vehicle uses gateway filtering
+Vehicle uses different CAN bus
+Request format not supported
+Adapter in listen-only mode
+```
+
+---
+
+# 21. Your specific symptom: TX increases, RX stays zero
+
+Your earlier output showed:
+
+```text
+RX: bytes packets
+     0       0
+
+TX: bytes packets
+     8       1
+```
+
+That means:
+
+```text
+Linux has transmitted one frame.
+Linux has received zero frames.
+The interface is not bus-off.
+```
+
+That alone is not enough to prove the SH-C31G is damaged.
+
+It becomes strong evidence of a bad RX path only if:
+
+```text
+A known-good CAN adapter sees the SH-C31G transmit.
+The known-good adapter transmits valid frames.
+The SH-C31G RXD LED never blinks.
+candump can0 shows nothing.
+RX packets stay at 0.
+Bitrate, wiring, and termination are confirmed.
+```
+
+At that point, replacement is reasonable.

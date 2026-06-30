@@ -29,10 +29,15 @@ setup_can() {
 }
 setup_can
 
+# ── Ensure host-side app directories exist ───────────────────────────────────
+mkdir -p /home/lola/mini_obd/app/api /home/lola/mini_obd/app/web/out
+
 # ── Start container ───────────────────────────────────────────────────────────
 exec docker run --name "$CONTAINER" \
     --network=host \
     -v /home/lola/mini_obd/data:/root/mini_obd/data \
     -v /home/lola/mini_obd/logs:/root/mini_obd/logs \
     -v /home/lola/mini_obd/config:/root/mini_obd/config \
+    -v /home/lola/mini_obd/app/api:/root/mini_obd/app/api \
+    -v /home/lola/mini_obd/app/web/out:/root/mini_obd/app/web/out \
     "$IMAGE"
