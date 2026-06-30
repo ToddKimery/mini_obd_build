@@ -9,15 +9,23 @@ CONTAINER="mini-obd"
 docker stop "$CONTAINER" 2>/dev/null || true
 docker rm   "$CONTAINER" 2>/dev/null || true
 
-# ── Set up gs_usb CAN interface (candleLight firmware) ───────────────────────
+# ── Set up SLCAN interface (normaldotcom/canable2 SLCAN firmware) ────────────
 setup_can() {
-    if ip link show can0 &>/dev/null; then
-        sudo ip link set can0 up type can bitrate 500000 2>/dev/null && \
-            echo "[docker_run] can0 up at 500kbps" || \
-            echo "[docker_run] can0 already up or failed"
-    else
-        echo "[docker_run] No can0 interface found — adapter may not be connected"
+    local TTY
+    TTY=$(ls /dev/ttyACM0 /dev/ttyACM1 2>/dev/null | head -1)
+    if [ -z "$TTY" ]; then
+        echo "[docker_run] No ttyACM device found — adapter not connected"
+        return 1
     fi
+    echo "[docker_run] Using $TTY"
+    sudo pkill -f slcand 2>/dev/null; sleep 0.3
+    sudo ip link delete slcan0 2>/dev/null; sleep 0.1
+    sudo slcand -o -c -s6 "$TTY" slcan0 && \
+        sleep 0.5 && \
+        sudo ip link set slcan0 up && \
+        sudo ip link set slcan0 txqueuelen 1000 && \
+        echo "[docker_run] slcan0 up at 500kbps on $TTY" || \
+        echo "[docker_run] slcand failed on $TTY"
 }
 setup_can
 
