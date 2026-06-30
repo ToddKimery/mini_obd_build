@@ -9,26 +9,17 @@ CONTAINER="mini-obd"
 docker stop "$CONTAINER" 2>/dev/null || true
 docker rm   "$CONTAINER" 2>/dev/null || true
 
-# ── Set up SLCAN interface ────────────────────────────────────────────────────
-setup_slcan() {
-    local tty=""
-    for dev in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyUSB0 /dev/ttyUSB1; do
-        [ -e "$dev" ] && tty="$dev" && break
-    done
-    [ -z "$tty" ] && echo "[docker_run] No CAN adapter found — slcan0 not set up" && return 0
-
-    # Tear down any stale interface
-    sudo ip link set slcan0 down 2>/dev/null || true
-    sudo pkill -f "slcand.*$tty" 2>/dev/null || true
-    sleep 0.3
-
-    echo "[docker_run] Starting slcand on $tty -> slcan0 (500kbps)"
-    sudo slcand -o -c -s6 "$tty" slcan0 2>/dev/null && \
-        sudo ip link set slcan0 up && \
-        echo "[docker_run] slcan0 up" || \
-        echo "[docker_run] slcan0 setup failed (adapter may not be ready)"
+# ── Set up gs_usb CAN interface (candleLight firmware) ───────────────────────
+setup_can() {
+    if ip link show can0 &>/dev/null; then
+        sudo ip link set can0 up type can bitrate 500000 2>/dev/null && \
+            echo "[docker_run] can0 up at 500kbps" || \
+            echo "[docker_run] can0 already up or failed"
+    else
+        echo "[docker_run] No can0 interface found — adapter may not be connected"
+    fi
 }
-setup_slcan
+setup_can
 
 # ── Start container ───────────────────────────────────────────────────────────
 # obd_manager.py override: lets us update the file on Pi without rebuilding the image
